@@ -21,11 +21,14 @@ import (
 	"errors"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -58,6 +61,16 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("--discord-token-secret and the operator namespace must be set"))
 	}
 	return errors.Join(errs...)
+}
+
+// CacheOptions restricts the Secret cache to Secrets the operator created (research R14).
+// Shared by cmd/main.go and the envtest suite so both behave the same.
+func CacheOptions() cache.Options {
+	return cache.Options{
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Label: labels.SelectorFromSet(labels.Set{LabelManagedBy: ManagedByValue})},
+		},
+	}
 }
 
 // Database kinds created as unstructured objects (research R4, R6).

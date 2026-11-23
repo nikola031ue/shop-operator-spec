@@ -5,11 +5,54 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - shophub.io
+  - ""
   resources:
-  - discordchannels
-  - shops
-  - wallets
+  - secrets
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - redis.redis.opstreelabs.in
+  resources:
+  - redis
   verbs:
   - create
   - delete
@@ -21,8 +64,18 @@ rules:
 - apiGroups:
   - shophub.io
   resources:
+  - discordchannels
+  - wallets
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - shophub.io
+  resources:
   - discordchannels/finalizers
-  - shops/finalizers
   - wallets/finalizers
   verbs:
   - update
@@ -36,3 +89,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - shophub.io
+  resources:
+  - shops
+  verbs:
+  - get
+  - list
+  - watch

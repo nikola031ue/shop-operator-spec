@@ -17,20 +17,26 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -54,7 +60,7 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	logf.SetLogger(zap.New(zap.WriteTo(io.MultiWriter(GinkgoWriter, &logBuf)), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
@@ -87,7 +93,54 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	By("starting the manager with the reconcilers under test")
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                 scheme.Scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		Cache:                  CacheOptions(),
+	})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(SetupIndexes(ctx, mgr)).To(Succeed())
+	Expect((&WalletReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&ShopReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Config: testConfig,
+		DBKinds: DatabaseKinds{Postgres: true, Redis: true},
+	}).SetupWithManager(mgr)).To(Succeed())
+	go func() {
+		defer GinkgoRecover()
+		Expect(mgr.Start(ctx)).To(Succeed())
+	}()
 })
+
+// testConfig is the operator configuration used by the suite's manager.
+var testConfig = Config{
+	ShopImage: "nginx", ShopImageTag: "1.27.3",
+	DiscordTokenSecret: types.NamespacedName{Namespace: "default", Name: "shop-operator-discord"},
+}
+
+// logBuf captures every operator log line so tests can assert no secret value is logged (SC-007).
+var logBuf syncBuffer
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

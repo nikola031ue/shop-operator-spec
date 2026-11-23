@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -25,6 +27,8 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Admission rejections from contracts/crds.md (SC-004). Unstructured objects let a test omit
@@ -52,6 +56,21 @@ func validShopSpec() map[string]any {
 		"walletRef":         map[string]any{"name": "w"},
 		"discordChannelRef": map[string]any{"name": "d"},
 	}
+}
+
+// patchSpec sends a JSON merge patch setting spec.<path> to value (nil removes the field).
+// A merge patch carries no resourceVersion, so it never conflicts with the reconcilers that
+// update the same object's status and finalizers.
+func patchSpec(obj *unstructured.Unstructured, value any, path ...string) error {
+	node := value
+	for _, p := range slices.Backward(path) {
+		node = map[string]any{p: node}
+	}
+	raw, err := json.Marshal(map[string]any{"spec": node})
+	if err != nil {
+		return err
+	}
+	return k8sClient.Patch(ctx, obj, client.RawPatch(types.MergePatchType, raw))
 }
 
 func expectRejected(err error, fragments ...string) {
@@ -96,24 +115,17 @@ var _ = Describe("CRD admission validation (contracts/crds.md, SC-004)", func() 
 		})
 
 		It("rejects changing database or shopName", func() {
-			name := uniqueName("immut")
-			obj := newObj("Shop", name, validShopSpec())
+			obj := newObj("Shop", uniqueName("immut"), validShopSpec())
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-
-			Expect(unstructured.SetNestedField(obj.Object, "light", "spec", "database")).To(Succeed())
-			expectRejected(k8sClient.Update(ctx, obj), "database is immutable")
-
-			Expect(k8sClient.Get(ctx, keyOf(obj), obj)).To(Succeed())
-			Expect(unstructured.SetNestedField(obj.Object, "Other name", "spec", "shopName")).To(Succeed())
-			expectRejected(k8sClient.Update(ctx, obj), "shopName is immutable")
+			expectRejected(patchSpec(obj, "light", "database"), "database is immutable")
+			expectRejected(patchSpec(obj, "Other name", "shopName"), "shopName is immutable")
 		})
 
 		It("allows changing availability and walletRef", func() {
 			obj := newObj("Shop", uniqueName("mut"), validShopSpec())
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-			Expect(unstructured.SetNestedField(obj.Object, "high", "spec", "availability")).To(Succeed())
-			Expect(unstructured.SetNestedField(obj.Object, "w2", "spec", "walletRef", "name")).To(Succeed())
-			Expect(k8sClient.Update(ctx, obj)).To(Succeed())
+			Expect(patchSpec(obj, "high", "availability")).To(Succeed())
+			Expect(patchSpec(obj, "w2", "walletRef", "name")).To(Succeed())
 		})
 	})
 
@@ -134,15 +146,9 @@ var _ = Describe("CRD admission validation (contracts/crds.md, SC-004)", func() 
 			obj := newObj("Wallet", uniqueName("once"), map[string]any{})
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
 
-			Expect(unstructured.SetNestedField(obj.Object, "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed", "spec", "address")).To(Succeed())
-			Expect(k8sClient.Update(ctx, obj)).To(Succeed())
-
-			Expect(unstructured.SetNestedField(obj.Object, "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359", "spec", "address")).To(Succeed())
-			expectRejected(k8sClient.Update(ctx, obj), "address is immutable")
-
-			Expect(k8sClient.Get(ctx, keyOf(obj), obj)).To(Succeed())
-			unstructured.RemoveNestedField(obj.Object, "spec", "address")
-			expectRejected(k8sClient.Update(ctx, obj), "address is immutable")
+			Expect(patchSpec(obj, "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed", "address")).To(Succeed())
+			expectRejected(patchSpec(obj, "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359", "address"), "address is immutable")
+			expectRejected(patchSpec(obj, nil, "address"), "address is immutable")
 		})
 	})
 

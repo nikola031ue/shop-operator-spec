@@ -42,10 +42,10 @@ var _ = Describe("common helpers", func() {
 	})
 
 	It("childLabels copies owner labels only and adds managed-by (FR-019)", func() {
-		parent := map[string]string{LabelOwner: "user-42", LabelShop: "acme", "unrelated": "x"}
+		parent := map[string]string{LabelOwner: testOwner, LabelShop: testShopName, "unrelated": "x"}
 		got := childLabels(parent)
 		Expect(got).To(Equal(map[string]string{
-			LabelManagedBy: ManagedByValue, LabelOwner: "user-42", LabelShop: "acme",
+			LabelManagedBy: ManagedByValue, LabelOwner: testOwner, LabelShop: testShopName,
 		}))
 		Expect(parent).To(HaveLen(3), "parent labels must not be modified")
 		Expect(childLabels(nil)).To(Equal(map[string]string{LabelManagedBy: ManagedByValue}))

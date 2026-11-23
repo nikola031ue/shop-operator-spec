@@ -38,7 +38,7 @@ type DiscordChannelReconciler struct {
 	Config Config
 }
 
-// +kubebuilder:rbac:groups=shophub.io,resources=discordchannels,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=shophub.io,resources=discordchannels,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=shophub.io,resources=discordchannels/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=shophub.io,resources=discordchannels/finalizers,verbs=update
 
