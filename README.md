@@ -105,7 +105,7 @@ and the token Secret is re-checked every minute.
 | `--shop-image` | `shopImage.repository` | `nginx` | Placeholder Shop app image |
 | `--shop-image-tag` | `shopImage.tag` | `1.27.3` | Must be pinned; `latest` is refused at startup |
 | `--discord-guild-id` | `discord.guildID` | `""` | Discord server ID |
-| `--discord-token-secret` | `discord.tokenSecret` | `shop-operator-discord` | Token Secret (key `token`) in the operator namespace |
+| `--discord-token-secret` | `discord.tokenSecretName` | `shop-operator-discord` | Token Secret (key `token`) in the operator namespace |
 | env `POD_NAMESPACE` | set by the chart | `shop-operator-system` | Operator namespace |
 
 Database operators are detected at startup. On a cluster without CloudNativePG or the OT
