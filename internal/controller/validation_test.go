@@ -41,7 +41,7 @@ func uniqueName(prefix string) string {
 }
 
 func newObj(kind, name string, spec map[string]any) *unstructured.Unstructured {
-	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+	u := &unstructured.Unstructured{Object: map[string]any{fieldSpec: spec}}
 	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "shophub.io", Version: "v1alpha1", Kind: kind})
 	u.SetNamespace("default")
 	u.SetName(name)
@@ -66,7 +66,7 @@ func patchSpec(obj *unstructured.Unstructured, value any, path ...string) error 
 	for _, p := range slices.Backward(path) {
 		node = map[string]any{p: node}
 	}
-	raw, err := json.Marshal(map[string]any{"spec": node})
+	raw, err := json.Marshal(map[string]any{fieldSpec: node})
 	if err != nil {
 		return err
 	}

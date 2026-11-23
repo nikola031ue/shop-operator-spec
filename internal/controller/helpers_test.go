@@ -38,6 +38,9 @@ const testShopName = "acme"
 // testOwner is the shophub.io/owner label value used across tests.
 const testOwner = "user-42"
 
+// fieldSpec is the unstructured "spec" key used in test fixtures.
+const fieldSpec = "spec"
+
 // testImageTag is the pinned placeholder image tag used across tests.
 const testImageTag = "1.27.3"
 

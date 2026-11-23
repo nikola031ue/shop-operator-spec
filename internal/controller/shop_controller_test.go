@@ -43,6 +43,7 @@ const (
 	addrB = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
 )
 
+//nolint:unparam // every Shop fixture references channel "ch"; kept as a parameter for clarity.
 func markChannelReady(c client.Client, ns, name string) {
 	GinkgoHelper()
 	var d shophubv1alpha1.DiscordChannel

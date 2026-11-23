@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	tShop  = "acme"
-	tImage = "nginx:1.27.3"
-	tOwner = "user-42"
+	tShop     = "acme"
+	tImage    = "nginx:1.27.3"
+	tOwner    = "user-42"
+	tAdminUID = "uid-admin"
 )
 
 func shop(avail shophubv1alpha1.Availability, db shophubv1alpha1.DatabaseType) *shophubv1alpha1.Shop {
@@ -190,5 +191,134 @@ func TestDatabaseBuilders(t *testing.T) {
 		if u.GetLabels()["shophub.io/shop"] != tShop {
 			t.Fatalf("%s must carry owner labels", u.GetKind())
 		}
+	}
+}
+
+// --- operator 0.2.0 (spec 003 contracts/operator-0.2.0.md) ---
+
+func TestRandomPassword(t *testing.T) {
+	seen := map[string]bool{}
+	for _, n := range []int{AdminPasswordLength, RedisPasswordLength} {
+		for range 20 {
+			p, err := RandomPassword(n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(p) != n {
+				t.Fatalf("length %d, want %d", len(p), n)
+			}
+			if strings.Trim(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
+				t.Fatalf("not URL-safe: %q", p)
+			}
+			if seen[p] {
+				t.Fatal("RandomPassword repeated a value")
+			}
+			seen[p] = true
+		}
+	}
+}
+
+func TestPasswordSecret(t *testing.T) {
+	s := shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight)
+	if AdminSecretName(s) != "acme-admin" || RedisAuthSecretName(s) != "acme-redis-auth" {
+		t.Fatalf("names %q %q", AdminSecretName(s), RedisAuthSecretName(s))
+	}
+	sec := PasswordSecret(s, AdminSecretName(s), owner, "pw-value")
+	if sec.Namespace != tOwner || sec.Kind != "Secret" || sec.Type != corev1.SecretTypeOpaque {
+		t.Fatalf("identity %s/%s %s %s", sec.Namespace, sec.Name, sec.Kind, sec.Type)
+	}
+	if sec.StringData[PasswordKey] != "pw-value" {
+		t.Fatal("password must be stored under key \"password\"")
+	}
+	for k, v := range owner {
+		if sec.Labels[k] != v {
+			t.Fatalf("label %s=%q, want %q (cache filter + Principle V)", k, sec.Labels[k], v)
+		}
+	}
+	owner["extra"] = "x"
+	defer delete(owner, "extra")
+	if sec.Labels["extra"] != "" {
+		t.Fatal("Secret labels must be a copy")
+	}
+}
+
+func secretRef(t *testing.T, env map[string]corev1.EnvVar, name, secret string) {
+	t.Helper()
+	e, ok := env[name]
+	if !ok {
+		t.Fatalf("%s missing", name)
+	}
+	if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil ||
+		e.ValueFrom.SecretKeyRef.Name != secret || e.ValueFrom.SecretKeyRef.Key != PasswordKey {
+		t.Fatalf("%s must be a secretKeyRef to %s/password, got %+v", name, secret, e)
+	}
+}
+
+func TestDeploymentPasswordRefsAndAnnotations(t *testing.T) {
+	std := params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard))
+	std.AdminSecretUID = tAdminUID
+	d := Deployment(std)
+	env := envMap(d.Spec.Template.Spec.Containers[0])
+	secretRef(t, env, "ADMIN_PASSWORD", "acme-admin")
+	if _, ok := env["REDIS_PASSWORD"]; ok {
+		t.Fatal("standard shop must not get REDIS_PASSWORD")
+	}
+	ann := d.Spec.Template.Annotations
+	if ann[AnnotationAdminSecretUID] != tAdminUID || ann[AnnotationRedisSecretUID] != "" {
+		t.Fatalf("annotations %v", ann)
+	}
+
+	light := params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight))
+	light.AdminSecretUID, light.RedisSecretUID = tAdminUID, "uid-redis"
+	d = Deployment(light)
+	env = envMap(d.Spec.Template.Spec.Containers[0])
+	secretRef(t, env, "ADMIN_PASSWORD", "acme-admin")
+	secretRef(t, env, "REDIS_PASSWORD", "acme-redis-auth")
+	if strings.Contains(env["REDIS_URL"].Value, "@") {
+		t.Fatal("REDIS_URL must stay credential-free")
+	}
+	if d.Spec.Template.Annotations[AnnotationRedisSecretUID] != "uid-redis" {
+		t.Fatalf("annotations %v", d.Spec.Template.Annotations)
+	}
+
+	light.RedisSecretUID = "uid-redis-2"
+	if d.Spec.Template.Annotations[AnnotationRedisSecretUID] == Deployment(light).Spec.Template.Annotations[AnnotationRedisSecretUID] {
+		t.Fatal("a recreated Secret must change the pod template so pods roll")
+	}
+}
+
+func TestDeploymentSysctlAndMemory(t *testing.T) {
+	d := Deployment(params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard)))
+	sc := d.Spec.Template.Spec.SecurityContext
+	if sc == nil || len(sc.Sysctls) != 1 || sc.Sysctls[0].Name != "net.ipv4.ip_unprivileged_port_start" || sc.Sysctls[0].Value != "0" {
+		t.Fatalf("sysctls %+v", sc)
+	}
+	r := d.Spec.Template.Spec.Containers[0].Resources
+	if r.Requests.Memory().String() != "128Mi" || r.Limits.Memory().String() != "256Mi" || r.Requests.Cpu().String() != "10m" {
+		t.Fatalf("resources %+v", r)
+	}
+}
+
+func TestRedisAuthStorageAndAOF(t *testing.T) {
+	r := Redis(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight), owner)
+	if n, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "name"); n != "acme-redis-auth" {
+		t.Fatalf("redisSecret.name %q", n)
+	}
+	if k, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "key"); k != PasswordKey {
+		t.Fatalf("redisSecret.key %q", k)
+	}
+	if keep, found, _ := unstructured.NestedBool(r.Object, "spec", "storage", "keepAfterDelete"); !found || keep {
+		t.Fatal("storage.keepAfterDelete must be false so deleting the Shop removes the data")
+	}
+	if s, _, _ := unstructured.NestedString(r.Object, "spec", "storage", "volumeClaimTemplate", "spec", "resources", "requests", "storage"); s != "1Gi" {
+		t.Fatalf("storage size %q", s)
+	}
+	modes, _, _ := unstructured.NestedStringSlice(r.Object, "spec", "storage", "volumeClaimTemplate", "spec", "accessModes")
+	if len(modes) != 1 || modes[0] != "ReadWriteOnce" {
+		t.Fatalf("accessModes %v", modes)
+	}
+	dyn, _, _ := unstructured.NestedStringSlice(r.Object, "spec", "redisConfig", "dynamicConfig")
+	if len(dyn) != 1 || dyn[0] != "appendonly yes" {
+		t.Fatalf("dynamicConfig %v", dyn)
 	}
 }

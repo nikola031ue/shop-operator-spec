@@ -108,7 +108,7 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ShopReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Config: testConfig,
-		DBKinds: DatabaseKinds{Postgres: true, Redis: true},
+		DBKinds: DatabaseKinds{Postgres: true, Redis: true}, APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr)).To(Succeed())
 	go func() {
 		defer GinkgoRecover()
