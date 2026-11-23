@@ -118,7 +118,7 @@ var _ = BeforeSuite(func() {
 
 // testConfig is the operator configuration used by the suite's manager.
 var testConfig = Config{
-	ShopImage: "nginx", ShopImageTag: "1.27.3",
+	ShopImage: "nginx", ShopImageTag: testImageTag,
 	DiscordTokenSecret: types.NamespacedName{Namespace: "default", Name: "shop-operator-discord"},
 }
 

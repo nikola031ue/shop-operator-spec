@@ -38,6 +38,9 @@ const testShopName = "acme"
 // testOwner is the shophub.io/owner label value used across tests.
 const testOwner = "user-42"
 
+// testImageTag is the pinned placeholder image tag used across tests.
+const testImageTag = "1.27.3"
+
 func keyOf(o client.Object) client.ObjectKey { return client.ObjectKeyFromObject(o) }
 
 // newNamespace creates a throwaway namespace so tests don't see each other's objects.

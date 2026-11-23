@@ -35,7 +35,7 @@ import (
 
 var _ = Describe("Config.Validate (FR-007)", func() {
 	valid := Config{
-		ShopImage: "nginx", ShopImageTag: "1.27.3",
+		ShopImage: "nginx", ShopImageTag: testImageTag,
 		DiscordTokenSecret: types.NamespacedName{Namespace: "shop-operator-system", Name: "shop-operator-discord"},
 	}
 
