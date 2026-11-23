@@ -1,31 +1,27 @@
-# Build the manager binary
-# Override BASE_IMAGE to build from another registry, e.g. docker.io/library/golang:1.26
-ARG BASE_IMAGE=golang:1.26
-FROM ${BASE_IMAGE} AS builder
+# shop-operator image (spec 002, research R16). Both base images are pinned by digest;
+# bump them deliberately in a PR. The runtime image is distroless and runs as non-root.
+
+# Go toolchain that builds the manager binary.
+ARG BUILDER_IMAGE=golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea
+# Minimal runtime: no shell, no package manager, user 65532.
+ARG RUNTIME_IMAGE=gcr.io/distroless/static:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
+
+FROM ${BUILDER_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
+# Cache module downloads separately from source changes.
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the Go source (relies on .dockerignore to filter)
+# Go sources only (.dockerignore excludes everything else, including tests).
 COPY . .
 
-# Build
-# the GOARCH has no default value to allow the binary to be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o manager ./cmd
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+FROM ${RUNTIME_IMAGE}
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532

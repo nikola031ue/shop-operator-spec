@@ -1,135 +1,141 @@
 # shop-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Kubernetes operator for ShopHub (Requirements 3.1, 3.2). It turns three custom resources into
+running infrastructure:
 
-## Getting Started
+| Kind | What the operator does |
+|------|------------------------|
+| `Shop` | Runs the shop application (2 replicas for `standard`, 3 for `high` availability), a ClusterIP Service, and a PostgreSQL (CloudNativePG, `database: standard`) or Redis (OT redis-operator, `database: light`) database. Passes the shop name, wallet address and database connection to the app. Deleting the Shop deletes all of it, including the data. |
+| `Wallet` | Registers an Ethereum Sepolia address you own (`spec.address`), or generates a new account when `spec.address` is omitted. Fully offline: no blockchain node is contacted. |
+| `DiscordChannel` | Creates a text channel and webhook on the project Discord server and stores the webhook URL in a Secret. Deleting the resource deletes the channel. |
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+Specification, plan and contracts: `shophub-specs/specs/002-shop-operator` (API reference:
+`contracts/crds.md`). The operator is installed by the `shop-operator` Helm chart in
+`helm-charts`, deployed from `kube-state`.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+> Until feature 3 ships the real Shop application, Shops run a configurable placeholder image
+> (`nginx:1.27.3` by default).
 
-```sh
-make docker-build docker-push IMG=<some-registry>/shop-operator:tag
+## Resources
+
+API group `shophub.io/v1alpha1`, all namespaced. A Shop references a Wallet and a
+DiscordChannel in its namespace; the ShopHub backend creates all three (constitution
+Principle V).
+
+```yaml
+apiVersion: shophub.io/v1alpha1
+kind: Wallet
+metadata: { name: acme-wallet }
+spec: {}                        # or: address: "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+---
+apiVersion: shophub.io/v1alpha1
+kind: DiscordChannel
+metadata: { name: acme-alerts }
+spec: { channelName: acme-alerts }
+---
+apiVersion: shophub.io/v1alpha1
+kind: Shop
+metadata:
+  name: acme
+  labels: { shophub.io/owner: user-42, shophub.io/shop: acme }
+spec:
+  shopName: "Acme Clothing"
+  availability: standard        # standard (2 replicas) | high (3 replicas)
+  database: standard            # standard (PostgreSQL) | light (Redis); immutable
+  walletRef: { name: acme-wallet }
+  discordChannelRef: { name: acme-alerts }
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+Every resource reports a `Ready` condition with a reason code: `kubectl get shop,wallet,dch`
+shows them. Reason codes and invalid inputs: `contracts/crds.md`.
 
-**Install the CRDs into the cluster:**
+A Shop is Ready only when its Wallet and DiscordChannel are Ready, its database is ready and
+all copies are available. Its status shows the in-cluster URL, the wallet address in use and
+the webhook Secret name.
 
-```sh
-make install
+## Wallets and private keys
+
+- **Registered** (`spec.address` set): only the address is stored. A mixed-case address must
+  carry a valid EIP-55 checksum (reason `InvalidChecksum` otherwise).
+- **Generated** (`spec.address` omitted): the operator generates a key **once** into Secret
+  `<wallet>-wallet-key` (key `privateKey`), owned by the Wallet. It never regenerates while
+  that Secret exists, and the key never appears in status, events or logs.
+
+> ⚠️ **Deleting a generated Wallet deletes its private key.** Funds on that address become
+> unreachable. This is acceptable only because ShopHub uses testnet tokens (Sepolia, mUSDT).
+> A Wallet that a Shop still references cannot be deleted: deletion waits (reason `InUse`)
+> until no Shop references it.
+
+### Recovering from `KeyLost`
+
+If the `<wallet>-wallet-key` Secret of a generated Wallet is deleted by hand, the key is gone.
+The Wallet reports `KeyLost` and keeps showing the old address. It does **not** generate a new
+key, because that would silently change the payment address. To recover:
+
+1. Create a new Wallet (new key, new address).
+2. Point every Shop that used the old Wallet at the new one (`spec.walletRef.name`). The shops
+   roll to the new address.
+3. Delete the old Wallet. Its in-use protection lets the deletion through once no Shop
+   references it.
+4. To reuse the old name, create a Wallet under it only after that deletion has finished.
+
+Funds sent to the old address stay unreachable.
+
+## Discord setup
+
+1. Create a Discord application with a bot and invite it to the project server with the
+   **Manage Channels** and **Manage Webhooks** permissions.
+2. Create the token Secret once per cluster, in the operator's namespace. This is the one
+   manual step (plan Complexity Tracking): the token must never be committed.
+
+   ```bash
+   kubectl create secret generic shop-operator-discord -n shop-operator-system \
+     --from-literal=token="$DISCORD_BOT_TOKEN"
+   ```
+
+3. Set the server ID in the chart values (`discord.guildID`, flag `--discord-guild-id`).
+
+Without these, the operator still runs. DiscordChannels report `DiscordCredentialsMissing`,
+and the token Secret is re-checked every minute.
+
+## Configuration
+
+| Flag | Chart value | Default | Meaning |
+|------|-------------|---------|---------|
+| `--shop-image` | `shopImage.repository` | `nginx` | Placeholder Shop app image |
+| `--shop-image-tag` | `shopImage.tag` | `1.27.3` | Must be pinned; `latest` is refused at startup |
+| `--discord-guild-id` | `discord.guildID` | `""` | Discord server ID |
+| `--discord-token-secret` | `discord.tokenSecret` | `shop-operator-discord` | Token Secret (key `token`) in the operator namespace |
+| env `POD_NAMESPACE` | set by the chart | `shop-operator-system` | Operator namespace |
+
+Database operators are detected at startup. On a cluster without CloudNativePG or the OT
+redis-operator the operator still starts, and Shops that need the missing database report
+`DatabaseOperatorMissing`. Install the operator, then restart shop-operator.
+
+## Development
+
+Requirements: Go (version in `go.mod`) and Docker. kubebuilder has no Windows build, so on
+Windows run the targets in a Linux container or WSL. CI runs them on Ubuntu.
+
+```bash
+make manifests generate   # CRDs, RBAC and deepcopy from the markers in api/ and internal/
+make test                 # unit tests + envtest integration tests
+make lint                 # golangci-lint
+hack/fetch-crds.sh        # refresh upstream CNPG/Redis CRDs in test/crds (pinned versions)
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+- `internal/wallet` — offline key generation and EIP-55 checks
+- `internal/resources` — pure builders for the shop's child objects
+- `internal/discord` — minimal Discord REST client
+- `internal/controller` — the three reconcilers (envtest specs alongside)
 
-```sh
-make deploy IMG=<some-registry>/shop-operator:tag
-```
+## Releases
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
-```
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/shop-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/shop-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+Images are published to `ghcr.io/nikola031ue/shop-operator:X.Y.Z` by the `release` CI job when
+a `vX.Y.Z` tag is pushed on `main`. The job requires `lint` and `test` to pass, refuses
+non-SemVer tags and never overwrites an existing version. `main` is protected: PRs only, CI
+required, linear history (constitution Principle II).
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache License 2.0.
