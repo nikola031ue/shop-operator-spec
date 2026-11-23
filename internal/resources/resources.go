@@ -78,6 +78,39 @@ type ShopParams struct {
 	WalletAddress string
 	// Labels are the child labels (managed-by + owner labels copied from the Shop).
 	Labels map[string]string
+	// AdminSecretUID / RedisSecretUID are the UIDs of the generated password Secrets. They go
+	// into pod-template annotations so a recreated Secret rolls the pods (003 contract). UIDs
+	// only, never values.
+	AdminSecretUID string
+	RedisSecretUID string
+}
+
+// Pod-template annotations carrying Secret UIDs (003 contract).
+const (
+	AnnotationAdminSecretUID = "shophub.io/admin-secret-uid"
+	AnnotationRedisSecretUID = "shophub.io/redis-secret-uid"
+)
+
+// Shop container resources (003 research R16): the app must not depend on fitting 128Mi.
+var (
+	shopCPURequest    = resource.MustParse("10m")
+	shopMemoryRequest = resource.MustParse("128Mi")
+	shopMemoryLimit   = resource.MustParse("256Mi")
+)
+
+// Unstructured field names used more than once.
+const (
+	keySpec    = "spec"
+	keyStorage = "storage"
+)
+
+// RedisStorageSize is the PVC size of a light shop's Redis (003 research R3).
+const RedisStorageSize = "1Gi"
+
+func secretEnv(name, secret string) corev1.EnvVar {
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: PasswordKey,
+	}}}
 }
 
 func selectorLabels(shop *shophubv1alpha1.Shop) map[string]string {
@@ -99,13 +132,16 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 	env := []corev1.EnvVar{
 		{Name: "SHOP_NAME", Value: shop.Spec.ShopName},
 		{Name: "WALLET_ADDRESS", Value: p.WalletAddress},
+		secretEnv("ADMIN_PASSWORD", AdminSecretName(shop)),
 	}
+	annotations := map[string]string{AnnotationAdminSecretUID: p.AdminSecretUID}
 	switch shop.Spec.Database {
 	case shophubv1alpha1.DatabaseLight:
 		env = append(env, corev1.EnvVar{
 			Name:  "REDIS_URL",
 			Value: fmt.Sprintf("redis://%s.%s.svc:6379", RedisName(shop), shop.Namespace),
-		})
+		}, secretEnv("REDIS_PASSWORD", RedisAuthSecretName(shop)))
+		annotations[AnnotationRedisSecretUID] = p.RedisSecretUID
 	default:
 		env = append(env, corev1.EnvVar{
 			Name: "DATABASE_URL",
@@ -125,8 +161,15 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(shop)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: merge(p.Labels, selectorLabels(shop))},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      merge(p.Labels, selectorLabels(shop)),
+					Annotations: annotations,
+				},
 				Spec: corev1.PodSpec{
+					// Lets a non-root app bind port 80; a namespaced "safe" sysctl (003 R5).
+					SecurityContext: &corev1.PodSecurityContext{Sysctls: []corev1.Sysctl{
+						{Name: "net.ipv4.ip_unprivileged_port_start", Value: "0"},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "shop",
 						Image: p.Image,
@@ -137,10 +180,10 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 						}},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("32Mi"),
+								corev1.ResourceCPU:    shopCPURequest,
+								corev1.ResourceMemory: shopMemoryRequest,
 							},
-							Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+							Limits: corev1.ResourceList{corev1.ResourceMemory: shopMemoryLimit},
 						},
 					}},
 				},
@@ -172,9 +215,9 @@ func Service(p ShopParams) *corev1.Service {
 // CNPG creates database "app" and Secret <cluster>-app with the connection URI.
 func CNPGCluster(shop *shophubv1alpha1.Shop, labels map[string]string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"spec": map[string]any{
+		keySpec: map[string]any{
 			"instances": int64(1),
-			"storage":   map[string]any{"size": "1Gi"},
+			keyStorage:  map[string]any{"size": "1Gi"},
 			"bootstrap": map[string]any{"initdb": map[string]any{"database": "app", "owner": "app"}},
 		},
 	}}
@@ -186,11 +229,16 @@ func CNPGCluster(shop *shophubv1alpha1.Shop, labels map[string]string) *unstruct
 	return u
 }
 
-// Redis builds a standalone OT Redis for a `light` shop (FR-003). No password on the local
-// cluster (research R11 note).
+// Redis builds a standalone OT Redis for a `light` shop (FR-003). It requires the password in
+// RedisAuthSecretName (003 R2) and keeps its data on a PVC with AOF enabled (003 R3). The Redis
+// operator removes the PVC when the Redis is deleted (keepAfterDelete: false), and the Redis is
+// owned by the Shop.
+//
+// PVC labels cannot be set here: the OT CRD declares volumeClaimTemplate.metadata without
+// properties, so the API server prunes them. The Redis CR itself carries the Shop labels.
 func Redis(shop *shophubv1alpha1.Shop, labels map[string]string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"spec": map[string]any{
+		keySpec: map[string]any{
 			"kubernetesConfig": map[string]any{
 				"image":           RedisImage,
 				"imagePullPolicy": "IfNotPresent",
@@ -198,6 +246,19 @@ func Redis(shop *shophubv1alpha1.Shop, labels map[string]string) *unstructured.U
 					"requests": map[string]any{"cpu": "50m", "memory": "64Mi"},
 					"limits":   map[string]any{"memory": "128Mi"},
 				},
+				"redisSecret": map[string]any{"name": RedisAuthSecretName(shop), "key": PasswordKey},
+			},
+			keyStorage: map[string]any{
+				"keepAfterDelete": false,
+				"volumeClaimTemplate": map[string]any{
+					keySpec: map[string]any{
+						"accessModes": []any{"ReadWriteOnce"},
+						"resources":   map[string]any{"requests": map[string]any{keyStorage: RedisStorageSize}},
+					},
+				},
+			},
+			"redisConfig": map[string]any{
+				"dynamicConfig": []any{"appendonly yes"},
 			},
 			"podSecurityContext": map[string]any{"runAsUser": int64(1000), "fsGroup": int64(1000)},
 		},

@@ -53,6 +53,49 @@ A Shop is Ready only when its Wallet and DiscordChannel are Ready, its database 
 all copies are available. Its status shows the in-cluster URL, the wallet address in use and
 the webhook Secret name.
 
+### What the shop app receives
+
+Every shop pod gets these environment variables. Secrets are passed by reference only; their
+values never appear in the Shop, its status or the operator log.
+
+| Variable | `standard` | `light` | Source |
+|----------|-----------|---------|--------|
+| `SHOP_NAME` | ✓ | ✓ | `spec.shopName` |
+| `WALLET_ADDRESS` | ✓ | ✓ | the referenced Wallet's address |
+| `DATABASE_URL` | ✓ | – | CNPG Secret `<shop>-db-app`, key `uri` |
+| `REDIS_URL` | – | ✓ | `redis://<shop>-redis.<namespace>.svc:6379` (no credentials) |
+| `ADMIN_PASSWORD` | ✓ | ✓ | Secret `<shop>-admin`, key `password` (since 0.2.0) |
+| `REDIS_PASSWORD` | – | ✓ | Secret `<shop>-redis-auth`, key `password` (since 0.2.0) |
+
+The app listens on port 80; readiness is a TCP check on that port. Pods get memory request
+128Mi / limit 256Mi, and the sysctl `net.ipv4.ip_unprivileged_port_start=0`, so a non-root app
+can bind port 80.
+
+**Generated passwords** (since 0.2.0). For every Shop the operator creates `<shop>-admin` (24
+random characters), the shop's initial admin password. For a `light` Shop it also creates
+`<shop>-redis-auth` (32 characters), which the shop's Redis requires. Both are owned by the
+Shop and created once; an existing password is never replaced. Light-shop Redis keeps its data
+on a 1Gi volume with append-only persistence; deleting the Shop deletes the volume.
+
+- A deleted `<shop>-admin` is regenerated, and the pods restart with it. The shop app uses it
+  only while the admin still has the generated password.
+- A deleted `<shop>-redis-auth` is **not** regenerated. The running Redis would keep the old
+  password. See below.
+
+### Recovering from `RedisCredentialsLost`
+
+The Shop reports `RedisCredentialsLost` when `<shop>-redis-auth` was deleted while its Redis
+still exists. The old password is gone, so the shop's Redis data can't be reached any more. To
+recover, delete the Shop and create it again (same spec). This also creates a new, empty Redis.
+
+### Upgrading from 0.1.0
+
+0.1.0 shops are upgraded automatically: they get their Secrets and new variables, and their pods
+roll. A `light` shop's 0.1.0 Redis had no password and no volume. Storage can't be added to it in
+place, so the operator deletes it once and creates a new one (log line `Recreating Redis without
+storage (0.1.0 upgrade)`). 0.1.0 light shops ran only the placeholder app, so no real data is
+lost. `standard` shops keep their database.
+
 ## Wallets and private keys
 
 - **Registered** (`spec.address` set): only the address is stored. A mixed-case address must

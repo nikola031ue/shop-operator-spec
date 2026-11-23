@@ -219,10 +219,11 @@ func main() {
 	}
 
 	if err := (&controller.ShopReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Config:  cfg,
-		DBKinds: dbKinds,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Config:    cfg,
+		DBKinds:   dbKinds,
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "shop")
 		os.Exit(1)
