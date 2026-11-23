@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- shophub_v1alpha1_shop.yaml
+- shophub_v1alpha1_wallet.yaml
+- shophub_v1alpha1_discordchannel.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
