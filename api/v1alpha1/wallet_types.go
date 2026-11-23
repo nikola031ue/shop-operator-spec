@@ -1,0 +1,114 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+// WalletMode tells whether a Wallet's address was registered or generated.
+// +kubebuilder:validation:Enum=registered;generated
+type WalletMode string
+
+const (
+	// WalletModeRegistered means the user supplied spec.address; no key is held.
+	WalletModeRegistered WalletMode = "registered"
+	// WalletModeGenerated means the operator generated the key into a Secret.
+	WalletModeGenerated WalletMode = "generated"
+)
+
+// WalletSpec defines the desired state of Wallet (data-model.md "Wallet").
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.address) || (has(self.address) && self.address == oldSelf.address)",message="address is immutable"
+type WalletSpec struct {
+	// address is an existing Ethereum (Sepolia) address to register. Omit it to have the
+	// operator generate a new account. Immutable once set.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^0x[0-9a-fA-F]{40}$`
+	Address string `json:"address,omitempty"`
+}
+
+// WalletStatus defines the observed state of Wallet.
+type WalletStatus struct {
+	// observedGeneration is the metadata.generation last reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// conditions; type Ready carries the reason codes from contracts/crds.md.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// address is the checksummed account address (registered or generated).
+	// +optional
+	Address string `json:"address,omitempty"`
+
+	// mode is registered or generated.
+	// +optional
+	Mode WalletMode `json:"mode,omitempty"`
+
+	// keySecretName is the Secret holding the private key (generated mode only).
+	// +optional
+	KeySecretName string `json:"keySecretName,omitempty"`
+
+	// usedBy lists the Shops in this namespace that reference this Wallet.
+	// +listType=set
+	// +optional
+	UsedBy []string `json:"usedBy,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=wallet
+// +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.status.address`
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.status.mode`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// Wallet is an Ethereum Sepolia account that receives a shop's payments.
+type Wallet struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// metadata is a standard object metadata
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitzero"`
+
+	// spec defines the desired state of Wallet
+	// +optional
+	Spec WalletSpec `json:"spec,omitzero"`
+
+	// status defines the observed state of Wallet
+	// +optional
+	Status WalletStatus `json:"status,omitzero"`
+}
+
+// +kubebuilder:object:root=true
+
+// WalletList contains a list of Wallet
+type WalletList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitzero"`
+	Items           []Wallet `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(SchemeGroupVersion, &Wallet{}, &WalletList{})
+		return nil
+	})
+}
