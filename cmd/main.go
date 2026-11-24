@@ -91,6 +91,19 @@ func main() {
 	flag.StringVar(&cfg.DiscordGuildID, "discord-guild-id", "", "Discord server (guild) ID.")
 	flag.StringVar(&cfg.DiscordTokenSecret.Name, "discord-token-secret", "shop-operator-discord",
 		"Secret in the operator namespace holding the Discord bot token under key 'token'.")
+	// Spec 004 (operator 0.3.0): namespace scoping and per-Shop routing.
+	flag.StringVar(&cfg.WatchNamespace, "watch-namespace", "shops",
+		"The only namespace whose Shops and Wallets are reconciled and cached. DiscordChannels are "+
+			"also reconciled in the operator's own namespace (platform alerts channel).")
+	flag.StringVar(&cfg.ShopDomain, "shop-domain", "shops.localhost",
+		"Host suffix: a Shop is served at <shop>.<shop-domain>.")
+	flag.StringVar(&cfg.IngressClass, "ingress-class", "traefik", "spec.ingressClassName of every Shop Ingress.")
+	flag.StringVar(&cfg.IngressNamespace, "ingress-namespace", "traefik",
+		"Namespace of the entry point; the Shop NetworkPolicy admits it.")
+	flag.StringVar(&cfg.ShopHubNamespace, "shophub-namespace", "shophub",
+		"Namespace of ShopHub; the Shop NetworkPolicy admits it.")
+	flag.StringVar(&cfg.TrustedProxyCIDRs, "trusted-proxy-cidrs", "10.244.0.0/16",
+		"Comma-separated networks whose forwarded headers the shop app trusts (TRUSTED_PROXY_CIDRS).")
 	opts := zap.Options{
 		Development: false,
 	}
@@ -186,7 +199,8 @@ func main() {
 		LeaderElectionID:       "shop-operator.shophub.io",
 		// Cache only Secrets the operator created (research R14). The hand-created Discord
 		// token Secret is read with mgr.GetAPIReader() instead.
-		Cache: controller.CacheOptions(),
+		// With --watch-namespace, every kind is cached in that namespace only (spec 004 FR-026).
+		Cache: cfg.CacheOptions(),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -212,6 +226,7 @@ func main() {
 		os.Exit(1)
 	}
 	setupLog.Info("Database kinds", "postgres", dbKinds.Postgres, "redis", dbKinds.Redis)
+	setupLog.Info("Scope", "watchNamespace", cfg.WatchNamespace, "operatorNamespace", cfg.OperatorNamespace())
 
 	if err := controller.SetupIndexes(context.Background(), mgr); err != nil {
 		setupLog.Error(err, "Failed to set up field indexes")
@@ -229,6 +244,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.WalletReconciler{
+		Config:    cfg,
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		APIReader: mgr.GetAPIReader(),

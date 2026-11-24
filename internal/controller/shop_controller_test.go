@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -188,10 +189,58 @@ var _ = Describe("Shop reconciler (US1)", func() {
 			g.Expect(readyOf(s.Status.Conditions)).To(Equal("True/Ready"))
 			g.Expect(s.Status.Replicas).To(BeEquivalentTo(2))
 			g.Expect(s.Status.ReadyReplicas).To(BeEquivalentTo(2))
-			g.Expect(s.Status.URL).To(Equal("http://acme." + ns + ".svc.cluster.local"))
+			g.Expect(s.Status.URL).To(Equal("https://acme." + testShopDomain))
 			g.Expect(s.Status.WalletAddress).To(Equal(addrA))
 			g.Expect(s.Status.WebhookSecretName).To(Equal("ch-discord-webhook"))
 			g.Expect(s.Status.ObservedGeneration).To(Equal(s.Generation))
+		}, reasonTimeout).Should(Succeed())
+	})
+
+	It("spec 004: routes the Shop through an owned Ingress and NetworkPolicy and restores manual edits", func() {
+		setupRefs()
+		Expect(k8sClient.Create(ctx, newShop(ns, testShopName, "w", shophubv1alpha1.DatabaseStandard))).To(Succeed())
+
+		key := client.ObjectKey{Namespace: ns, Name: testShopName}
+		var ing networkingv1.Ingress
+		var np networkingv1.NetworkPolicy
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, key, &ing)).To(Succeed())
+			g.Expect(k8sClient.Get(ctx, key, &np)).To(Succeed())
+			// Status is patched at the end of the reconcile, after the children are applied.
+			g.Expect(getShop(g, ns, testShopName).Status.URL).To(Equal("https://acme." + testShopDomain))
+		}, reasonTimeout).Should(Succeed())
+		shop := getShop(Default, ns, testShopName)
+
+		By("owning both, with the configured class, host, namespaces and port")
+		expectControlledBy(&ing, shop)
+		expectControlledBy(&np, shop)
+		Expect(*ing.Spec.IngressClassName).To(Equal("traefik"))
+		Expect(ing.Spec.Rules[0].Host).To(Equal("acme." + testShopDomain))
+		Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name).To(Equal(testShopName))
+		Expect(ing.Spec.TLS).To(BeEmpty())
+		Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", testShopName))
+		Expect(np.Spec.Ingress).To(HaveLen(1))
+		Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
+		Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", "traefik"))
+		Expect(np.Spec.Ingress[0].From[1].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", "shophub"))
+		Expect(envOf(getDeployment(Default, ns, testShopName))["TRUSTED_PROXY_CIDRS"].Value).To(Equal("10.244.0.0/16"))
+
+		By("restoring a hand-edited Ingress host")
+		patch := client.MergeFrom(ing.DeepCopy())
+		ing.Spec.Rules[0].Host = "evil." + testShopDomain
+		Expect(k8sClient.Patch(ctx, &ing, patch)).To(Succeed())
+		Eventually(func(g Gomega) {
+			var got networkingv1.Ingress
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.Spec.Rules[0].Host).To(Equal("acme." + testShopDomain))
+		}, reasonTimeout).Should(Succeed())
+
+		By("recreating a deleted NetworkPolicy")
+		Expect(k8sClient.Delete(ctx, &np)).To(Succeed())
+		Eventually(func(g Gomega) {
+			var got networkingv1.NetworkPolicy
+			g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+			g.Expect(got.UID).NotTo(Equal(np.UID))
 		}, reasonTimeout).Should(Succeed())
 	})
 

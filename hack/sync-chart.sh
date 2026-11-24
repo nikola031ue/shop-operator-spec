@@ -5,8 +5,10 @@
 #
 # Writes CHART_DIR/templates/crds.yaml (all CRDs from config/crd/bases, annotated
 # helm.sh/resource-policy: keep so uninstalling the chart never deletes Shops) and
-# CHART_DIR/templates/rbac.yaml (ClusterRole from config/rbac/role.yaml, leader-election Role
-# from config/rbac/leader_election_role.yaml, plus their bindings). Run `make manifests` first.
+# CHART_DIR/templates/rbac.yaml (namespaced Roles only, spec 004 FR-026: the manager rules from
+# the ClusterRole in config/rbac/role.yaml become a Role in .Values.shopsNamespace; the
+# namespace=system Role becomes a Role in the release namespace for the platform alerts
+# DiscordChannel; plus the leader-election Role and all bindings). Run `make manifests` first.
 # The generated files are committed to helm-charts through a normal PR.
 set -euo pipefail
 
@@ -36,30 +38,64 @@ if grep -q '{{' "$crds"; then
 fi
 
 # --- RBAC ---------------------------------------------------------------------------------
+rules_of() { yq eval "select(.kind == \"$1\") | .rules" config/rbac/role.yaml; }
 indent_rules() { yq eval '.rules' "$1"; }
+[[ "$(rules_of ClusterRole)" != "" && "$(rules_of Role)" != "" ]] \
+  || { echo "ERROR: config/rbac/role.yaml must hold the manager ClusterRole and the namespace=system Role" >&2; exit 1; }
 cat > "$chart/templates/rbac.yaml" <<YAML
 $header
-# Cluster-wide because Shops live in user namespaces created at runtime (plan Complexity
-# Tracking). Rules come from the +kubebuilder:rbac markers; no wildcards.
+# Namespaced only (spec 004 FR-026, closes 002 R-1). Rules come from the +kubebuilder:rbac
+# markers; no wildcards and no ClusterRole.
+# Manager: every kind it reconciles, in the shops namespace only.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "shop-operator.fullname" . }}-manager
+  namespace: {{ .Values.shopsNamespace }}
   labels:
     {{- include "shop-operator.labels" . | nindent 4 }}
 rules:
-$(indent_rules config/rbac/role.yaml)
+$(rules_of ClusterRole)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "shop-operator.fullname" . }}-manager
+  namespace: {{ .Values.shopsNamespace }}
   labels:
     {{- include "shop-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "shop-operator.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "shop-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Own namespace: the platform alerts DiscordChannel and its webhook Secret, and reading the
+# Discord token Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "shop-operator.fullname" . }}-platform-channels
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "shop-operator.labels" . | nindent 4 }}
+rules:
+$(rules_of Role)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "shop-operator.fullname" . }}-platform-channels
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "shop-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "shop-operator.fullname" . }}-platform-channels
 subjects:
   - kind: ServiceAccount
     name: {{ include "shop-operator.fullname" . }}

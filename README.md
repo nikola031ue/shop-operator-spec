@@ -144,8 +144,8 @@ Funds sent to the old address stay unreachable.
 
 1. Create a Discord application with a bot and invite it to the project server with the
    **Manage Channels** and **Manage Webhooks** permissions.
-2. Create the token Secret once per cluster, in the operator's namespace. This is the one
-   manual step (plan Complexity Tracking): the token must never be committed.
+2. Create the token Secret once per cluster, in the operator's namespace. This is a manual
+   step (plan Complexity Tracking): the token must never be committed.
 
    ```bash
    kubectl create secret generic shop-operator-discord -n shop-operator-system \
@@ -166,6 +166,29 @@ and the token Secret is re-checked every minute.
 | `--discord-guild-id` | `discord.guildID` | `""` | Discord server ID |
 | `--discord-token-secret` | `discord.tokenSecretName` | `shop-operator-discord` | Token Secret (key `token`) in the operator namespace |
 | env `POD_NAMESPACE` | set by the chart | `shop-operator-system` | Operator namespace |
+| `--watch-namespace` | `shopsNamespace` | `shops` | The only namespace whose Shops and Wallets are reconciled and cached |
+| `--shop-domain` | `shopDomain` | `shops.localhost` | A Shop is served at `https://<shop>.<shop-domain>` (`status.url`) |
+| `--ingress-class` | `ingressClassName` | `traefik` | `spec.ingressClassName` of every Shop Ingress |
+| `--ingress-namespace` | `ingressNamespace` | `traefik` | Entry point namespace, admitted by the Shop NetworkPolicy |
+| `--shophub-namespace` | `shophubNamespace` | `shophub` | ShopHub namespace, admitted by the Shop NetworkPolicy |
+| `--trusted-proxy-cidrs` | `trustedProxyCIDRs` | `10.244.0.0/16` | Passed to the shop app as `TRUSTED_PROXY_CIDRS` |
+
+### Namespaces and permissions (0.3.0)
+
+The operator has no cluster-wide permissions:
+
+- **Shops namespace** (`--watch-namespace`): a Role for every kind it reconciles: Shops,
+  Wallets, DiscordChannels (with status and finalizers), Deployments, Services, Secrets, CNPG
+  Clusters, Redis, StatefulSets (read), Ingresses and NetworkPolicies. Only Secrets labelled
+  `app.kubernetes.io/managed-by=shop-operator` are cached.
+- **Operator namespace**: a Role for DiscordChannels and Secrets, for the platform alerts
+  channel and its webhook Secret, and for reading the Discord token Secret. Shops and Wallets
+  there are not reconciled. Plus the leader-election Role.
+
+Shops, Wallets and DiscordChannels in any other namespace are ignored. Each Shop gets two more
+owned children: an Ingress for `<shop>.<shop-domain>` (no `tls` block; the entry point's default
+certificate covers it) and a NetworkPolicy that admits TCP 80 only from the entry point and
+ShopHub namespaces.
 
 Database operators are detected at startup. On a cluster without CloudNativePG or the OT
 redis-operator the operator still starts, and Shops that need the missing database report

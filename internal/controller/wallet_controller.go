@@ -54,6 +54,8 @@ func WalletKeySecretName(w *shophubv1alpha1.Wallet) string { return w.Name + "-w
 type WalletReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Config limits reconciliation to the shops namespace (spec 004 FR-026).
+	Config Config
 	// APIReader confirms a key Secret is really gone before reporting KeyLost; the cache may
 	// lag right after the Secret was created.
 	APIReader client.Reader
@@ -74,6 +76,9 @@ func (r *WalletReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	var w shophubv1alpha1.Wallet
 	if err := r.Get(ctx, req.NamespacedName, &w); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !r.Config.ShopsNamespace(w.Namespace) {
+		return ctrl.Result{}, nil // the cache never delivers these; defence in depth (FR-026)
 	}
 	orig := w.DeepCopy()
 

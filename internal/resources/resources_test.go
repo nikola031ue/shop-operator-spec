@@ -166,9 +166,6 @@ func TestService(t *testing.T) {
 	if svc.Spec.Type != corev1.ServiceTypeClusterIP || svc.Spec.Ports[0].Port != 80 || svc.Kind != "Service" {
 		t.Fatalf("unexpected service %+v", svc.Spec)
 	}
-	if got := URL(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard)); got != "http://acme.user-42.svc.cluster.local" {
-		t.Fatalf("URL %q", got)
-	}
 }
 
 func TestDatabaseBuilders(t *testing.T) {

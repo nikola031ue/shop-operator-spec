@@ -99,12 +99,12 @@ var _ = BeforeSuite(func() {
 		Scheme:                 scheme.Scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
-		Cache:                  CacheOptions(),
+		Cache:                  testConfig.CacheOptions(),
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(SetupIndexes(ctx, mgr)).To(Succeed())
 	Expect((&WalletReconciler{
-		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
+		Config: testConfig, Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ShopReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Config: testConfig,
@@ -119,8 +119,19 @@ var _ = BeforeSuite(func() {
 // testConfig is the operator configuration used by the suite's manager.
 var testConfig = Config{
 	ShopImage: "nginx", ShopImageTag: testImageTag,
-	DiscordTokenSecret: types.NamespacedName{Namespace: "default", Name: "shop-operator-discord"},
+	DiscordTokenSecret: types.NamespacedName{Namespace: "default", Name: testTokenSecret},
+	// WatchNamespace stays empty: every test uses its own namespace. The scoped behaviour is
+	// tested with a second API server (scope_test.go).
+	ShopDomain: testShopDomain, IngressClass: testIngressNS, IngressNamespace: testIngressNS,
+	ShopHubNamespace: "shophub", TrustedProxyCIDRs: "10.244.0.0/16",
 }
+
+// Values shared by the suite's and the scoped manager's configuration.
+const (
+	testShopDomain  = "shops.localhost"
+	testIngressNS   = "traefik"
+	testTokenSecret = "shop-operator-discord"
+)
 
 // logBuf captures every operator log line so tests can assert no secret value is logged (SC-007).
 var logBuf syncBuffer

@@ -20,12 +20,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -46,11 +49,53 @@ type Config struct {
 	// DiscordTokenSecret locates the bot token Secret (key "token"). It is hand-created and
 	// unlabelled, so it is read with the uncached API reader (research R14, R15).
 	DiscordTokenSecret types.NamespacedName
+
+	// WatchNamespace is the only namespace whose Shops and Wallets are reconciled and cached
+	// (spec 004 FR-026). DiscordChannels are also reconciled in the operator's own namespace
+	// (DiscordTokenSecret.Namespace), for the platform alerts channel. Empty means every
+	// namespace; only the test suite uses that, Validate refuses it.
+	WatchNamespace string
+	// ShopDomain is the public host suffix: a Shop is served at <shop>.<ShopDomain> (FR-021).
+	ShopDomain string
+	// IngressClass is spec.ingressClassName of every Shop Ingress.
+	IngressClass string
+	// IngressNamespace and ShopHubNamespace are the only namespaces the Shop NetworkPolicy
+	// admits.
+	IngressNamespace string
+	ShopHubNamespace string
+	// TrustedProxyCIDRs is passed to the shop app as TRUSTED_PROXY_CIDRS (comma-separated).
+	TrustedProxyCIDRs string
 }
 
-// Validate rejects configurations that would break FR-007 (pinned image, never "latest").
+// OperatorNamespace is the operator's own namespace (where the Discord token Secret lives).
+func (c Config) OperatorNamespace() string { return c.DiscordTokenSecret.Namespace }
+
+// ShopsNamespace reports whether Shops and Wallets in ns are reconciled.
+func (c Config) ShopsNamespace(ns string) bool {
+	return c.WatchNamespace == "" || ns == c.WatchNamespace
+}
+
+// Validate rejects configurations that would break FR-007 (pinned image, never "latest") or
+// the spec 004 routing and namespace scoping.
 func (c Config) Validate() error {
 	var errs []error
+	for flag, ns := range map[string]string{
+		"--watch-namespace": c.WatchNamespace, "--ingress-namespace": c.IngressNamespace,
+		"--shophub-namespace": c.ShopHubNamespace,
+	} {
+		if msgs := validation.IsDNS1123Label(ns); len(msgs) > 0 {
+			errs = append(errs, fmt.Errorf("%s must be a namespace name, got %q", flag, ns))
+		}
+	}
+	if msgs := validation.IsDNS1123Subdomain(c.ShopDomain); len(msgs) > 0 {
+		errs = append(errs, fmt.Errorf("--shop-domain must be a DNS name, got %q", c.ShopDomain))
+	}
+	if c.IngressClass == "" {
+		errs = append(errs, errors.New("--ingress-class must not be empty"))
+	}
+	if _, err := ParseCIDRs(c.TrustedProxyCIDRs); err != nil {
+		errs = append(errs, fmt.Errorf("--trusted-proxy-cidrs: %w", err))
+	}
 	if c.ShopImage == "" {
 		errs = append(errs, errors.New("--shop-image must not be empty"))
 	}
@@ -63,12 +108,42 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// CacheOptions restricts the Secret cache to Secrets the operator created (research R14).
-// Shared by cmd/main.go and the envtest suite so both behave the same.
-func CacheOptions() cache.Options {
+// ParseCIDRs parses a comma-separated CIDR list; empty entries are skipped and an empty list is
+// allowed (the app then ignores forwarded headers).
+func ParseCIDRs(s string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for part := range strings.SplitSeq(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q", part)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// CacheOptions restricts the Secret cache to Secrets the operator created (research R14) and,
+// with WatchNamespace set, every cached kind to that namespace (spec 004 FR-026). DiscordChannels
+// and their webhook Secrets are also cached in the operator's own namespace, which holds the
+// platform alerts channel; nothing else is read there except the token Secret, by name, through
+// the uncached API reader. Shared by cmd/main.go and the envtest suites so all behave the same.
+func (c Config) CacheOptions() cache.Options {
+	managed := labels.SelectorFromSet(labels.Set{LabelManagedBy: ManagedByValue})
+	if c.WatchNamespace == "" {
+		return cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Label: managed},
+		}}
+	}
+	both := map[string]cache.Config{c.WatchNamespace: {}, c.OperatorNamespace(): {}}
 	return cache.Options{
+		DefaultNamespaces: map[string]cache.Config{c.WatchNamespace: {}},
 		ByObject: map[client.Object]cache.ByObject{
-			&corev1.Secret{}: {Label: labels.SelectorFromSet(labels.Set{LabelManagedBy: ManagedByValue})},
+			&corev1.Secret{}:                  {Label: managed, Namespaces: both},
+			&shophubv1alpha1.DiscordChannel{}: {Namespaces: both},
 		},
 	}
 }
