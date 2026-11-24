@@ -83,6 +83,17 @@ type ShopParams struct {
 	// only, never values.
 	AdminSecretUID string
 	RedisSecretUID string
+	// RedisSecretName is the light Shop's current Redis password Secret; empty means
+	// RedisAuthSecretName (operator 0.2.1 switches to a new name when the Secret is lost).
+	RedisSecretName string
+}
+
+// redisSecretName returns the Redis password Secret to reference.
+func (p ShopParams) redisSecretName() string {
+	if p.RedisSecretName != "" {
+		return p.RedisSecretName
+	}
+	return RedisAuthSecretName(p.Shop)
 }
 
 // Pod-template annotations carrying Secret UIDs (003 contract).
@@ -140,7 +151,7 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 		env = append(env, corev1.EnvVar{
 			Name:  "REDIS_URL",
 			Value: fmt.Sprintf("redis://%s.%s.svc:6379", RedisName(shop), shop.Namespace),
-		}, secretEnv("REDIS_PASSWORD", RedisAuthSecretName(shop)))
+		}, secretEnv("REDIS_PASSWORD", p.redisSecretName()))
 		annotations[AnnotationRedisSecretUID] = p.RedisSecretUID
 	default:
 		env = append(env, corev1.EnvVar{
@@ -230,13 +241,14 @@ func CNPGCluster(shop *shophubv1alpha1.Shop, labels map[string]string) *unstruct
 }
 
 // Redis builds a standalone OT Redis for a `light` shop (FR-003). It requires the password in
-// RedisAuthSecretName (003 R2) and keeps its data on a PVC with AOF enabled (003 R3). The Redis
-// operator removes the PVC when the Redis is deleted (keepAfterDelete: false), and the Redis is
-// owned by the Shop.
+// Secret secretName (003 R2; RedisAuthSecretName or a later generation) and keeps its data on a
+// PVC with AOF enabled (003 R3). Changing secretName makes the Redis operator roll the pod with
+// the new password and the same PVC (operator 0.2.1). The Redis operator removes the PVC when
+// the Redis is deleted (keepAfterDelete: false), and the Redis is owned by the Shop.
 //
 // PVC labels cannot be set here: the OT CRD declares volumeClaimTemplate.metadata without
 // properties, so the API server prunes them. The Redis CR itself carries the Shop labels.
-func Redis(shop *shophubv1alpha1.Shop, labels map[string]string) *unstructured.Unstructured {
+func Redis(shop *shophubv1alpha1.Shop, labels map[string]string, secretName string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		keySpec: map[string]any{
 			"kubernetesConfig": map[string]any{
@@ -246,7 +258,7 @@ func Redis(shop *shophubv1alpha1.Shop, labels map[string]string) *unstructured.U
 					"requests": map[string]any{"cpu": "50m", "memory": "64Mi"},
 					"limits":   map[string]any{"memory": "128Mi"},
 				},
-				"redisSecret": map[string]any{"name": RedisAuthSecretName(shop), "key": PasswordKey},
+				"redisSecret": map[string]any{"name": secretName, "key": PasswordKey},
 			},
 			keyStorage: map[string]any{
 				"keepAfterDelete": false,

@@ -65,7 +65,7 @@ values never appear in the Shop, its status or the operator log.
 | `DATABASE_URL` | ✓ | – | CNPG Secret `<shop>-db-app`, key `uri` |
 | `REDIS_URL` | – | ✓ | `redis://<shop>-redis.<namespace>.svc:6379` (no credentials) |
 | `ADMIN_PASSWORD` | ✓ | ✓ | Secret `<shop>-admin`, key `password` (since 0.2.0) |
-| `REDIS_PASSWORD` | – | ✓ | Secret `<shop>-redis-auth`, key `password` (since 0.2.0) |
+| `REDIS_PASSWORD` | – | ✓ | Secret `<shop>-redis-auth` (since 0.2.0; `<shop>-redis-auth-<n>` after a recovery, 0.2.1), key `password` |
 
 The app listens on port 80; readiness is a TCP check on that port. Pods get memory request
 128Mi / limit 256Mi, and the sysctl `net.ipv4.ip_unprivileged_port_start=0`, so a non-root app
@@ -79,14 +79,30 @@ on a 1Gi volume with append-only persistence; deleting the Shop deletes the volu
 
 - A deleted `<shop>-admin` is regenerated, and the pods restart with it. The shop app uses it
   only while the admin still has the generated password.
-- A deleted `<shop>-redis-auth` is **not** regenerated. The running Redis would keep the old
-  password. See below.
+- A deleted Redis password Secret is regenerated under a new name (since 0.2.1). See below.
 
-### Recovering from `RedisCredentialsLost`
+### A deleted Redis password Secret (since 0.2.1)
 
-The Shop reports `RedisCredentialsLost` when `<shop>-redis-auth` was deleted while its Redis
-still exists. The old password is gone, so the shop's Redis data can't be reached any more. To
-recover, delete the Shop and create it again (same spec). This also creates a new, empty Redis.
+If the Redis password Secret of a `light` Shop is deleted while its Redis exists, the operator
+recovers on its own, with no data loss:
+
+1. It creates a new Secret with a new password under the next name: `<shop>-redis-auth` →
+   `<shop>-redis-auth-2` → `<shop>-redis-auth-3` … The old name is not reused.
+2. It points the Redis at the new Secret. The Redis operator then restarts the Redis pod with
+   the new password; the volume and its data stay. The Redis and its volume are never deleted
+   for this.
+3. The shop pods roll, because their `REDIS_PASSWORD` reference changes.
+
+While the Redis restarts, the Shop reports `Ready=False` with reason `DatabaseProvisioning`. The
+log line `Redis password Secret is missing; restarting Redis with a new password Secret` names
+both Secrets, never a password. Find the current Secret in the Redis resource:
+
+```bash
+kubectl get redis <shop>-redis -n <namespace> -o jsonpath='{.spec.kubernetesConfig.redisSecret.name}'
+```
+
+0.2.0 reported `RedisCredentialsLost` here and needed the Shop to be recreated; 0.2.1 no longer
+uses that reason.
 
 ### Upgrading from 0.1.0
 

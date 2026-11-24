@@ -112,7 +112,7 @@ func makeRedisReady(ns, name string) {
 		},
 	}
 	Expect(k8sClient.Create(ctx, sts)).To(Succeed())
-	sts.Status.Replicas, sts.Status.ReadyReplicas = 1, 1
+	sts.Status.Replicas, sts.Status.ReadyReplicas, sts.Status.ObservedGeneration = 1, 1, sts.Generation
 	Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
 }
 

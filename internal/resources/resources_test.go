@@ -180,7 +180,7 @@ func TestDatabaseBuilders(t *testing.T) {
 	if n, _, _ := unstructured.NestedInt64(c.Object, "spec", "instances"); n != 1 {
 		t.Fatalf("instances %d", n)
 	}
-	r := Redis(s, owner)
+	r := Redis(s, owner, RedisAuthSecretName(s))
 	if r.GetAPIVersion() != "redis.redis.opstreelabs.in/v1beta2" || r.GetKind() != "Redis" || r.GetName() != "acme-redis" {
 		t.Fatalf("redis identity %s %s %s", r.GetAPIVersion(), r.GetKind(), r.GetName())
 	}
@@ -220,7 +220,7 @@ func TestRandomPassword(t *testing.T) {
 
 func TestPasswordSecret(t *testing.T) {
 	s := shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight)
-	if AdminSecretName(s) != "acme-admin" || RedisAuthSecretName(s) != "acme-redis-auth" {
+	if AdminSecretName(s) != "acme-admin" || RedisAuthSecretName(s) != tRedisAuth {
 		t.Fatalf("names %q %q", AdminSecretName(s), RedisAuthSecretName(s))
 	}
 	sec := PasswordSecret(s, AdminSecretName(s), owner, "pw-value")
@@ -273,7 +273,7 @@ func TestDeploymentPasswordRefsAndAnnotations(t *testing.T) {
 	d = Deployment(light)
 	env = envMap(d.Spec.Template.Spec.Containers[0])
 	secretRef(t, env, "ADMIN_PASSWORD", "acme-admin")
-	secretRef(t, env, "REDIS_PASSWORD", "acme-redis-auth")
+	secretRef(t, env, "REDIS_PASSWORD", tRedisAuth)
 	if strings.Contains(env["REDIS_URL"].Value, "@") {
 		t.Fatal("REDIS_URL must stay credential-free")
 	}
@@ -300,8 +300,8 @@ func TestDeploymentSysctlAndMemory(t *testing.T) {
 }
 
 func TestRedisAuthStorageAndAOF(t *testing.T) {
-	r := Redis(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight), owner)
-	if n, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "name"); n != "acme-redis-auth" {
+	r := Redis(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight), owner, "acme-redis-auth-4")
+	if n, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "name"); n != "acme-redis-auth-4" {
 		t.Fatalf("redisSecret.name %q", n)
 	}
 	if k, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "key"); k != PasswordKey {
@@ -322,3 +322,35 @@ func TestRedisAuthStorageAndAOF(t *testing.T) {
 		t.Fatalf("dynamicConfig %v", dyn)
 	}
 }
+
+func TestRedisAuthSecretGenerations(t *testing.T) {
+	s := shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight)
+	for name, want := range map[string]int{
+		tRedisAuth: 1, tRedisAuth2: 2, "acme-redis-auth-17": 17,
+		"acme-redis-auth-1": 0, "acme-redis-auth-0": 0, "acme-redis-auth-02": 0, "acme-redis-auth-": 0,
+		"acme-redis-auth-x": 0, "acme-redis-auth-2x": 0, "other-redis-auth": 0, "": 0,
+	} {
+		if got := RedisAuthSecretGeneration(s, name); got != want {
+			t.Errorf("generation(%q) = %d, want %d", name, got, want)
+		}
+	}
+	for cur, want := range map[string]string{
+		tRedisAuth: tRedisAuth2, tRedisAuth2: "acme-redis-auth-3",
+		"acme-redis-auth-9": "acme-redis-auth-10", "unrelated": tRedisAuth2,
+	} {
+		if got := NextRedisAuthSecretName(s, cur); got != want {
+			t.Errorf("next(%q) = %q, want %q", cur, got, want)
+		}
+	}
+}
+
+func TestDeploymentFollowsRedisSecretName(t *testing.T) {
+	p := params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseLight))
+	p.RedisSecretName = "acme-redis-auth-3"
+	secretRef(t, envMap(Deployment(p).Spec.Template.Spec.Containers[0]), "REDIS_PASSWORD", "acme-redis-auth-3")
+}
+
+const (
+	tRedisAuth  = "acme-redis-auth"
+	tRedisAuth2 = "acme-redis-auth-2"
+)
