@@ -144,7 +144,7 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 				"the Redis operator (redis.redis.opstreelabs.in) is not installed; install the redis-operator release and restart shop-operator")
 			return ctrl.Result{}, nil
 		}
-		db = resources.Redis(shop, labels)
+		// Built in 2a, once the Redis password Secret name is known.
 	default:
 		if !r.DBKinds.Postgres {
 			r.setReady(shop, false, ReasonDatabaseOperatorMissing,
@@ -159,13 +159,14 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	var redisSecretUID string
+	var redisSec *corev1.Secret
 	if shop.Spec.Database == shophubv1alpha1.DatabaseLight {
-		res, uid, done, err := r.prepareRedis(ctx, shop, labels)
+		res, sec, done, err := r.prepareRedis(ctx, shop, labels)
 		if err != nil || done {
 			return res, err
 		}
-		redisSecretUID = uid
+		redisSec = sec
+		db = resources.Redis(shop, labels, sec.Name)
 	}
 
 	if err := r.apply(ctx, shop, db); err != nil {
@@ -179,7 +180,10 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 	}
 	p := resources.ShopParams{
 		Shop: shop, Image: image, WalletAddress: w.Status.Address, Labels: labels,
-		AdminSecretUID: string(adminSec.UID), RedisSecretUID: redisSecretUID,
+		AdminSecretUID: string(adminSec.UID),
+	}
+	if redisSec != nil {
+		p.RedisSecretUID, p.RedisSecretName = string(redisSec.UID), redisSec.Name
 	}
 	if err := r.apply(ctx, shop, resources.Deployment(p)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying Deployment: %w", err)
@@ -260,10 +264,17 @@ func (r *ShopReconciler) ensurePasswordSecret(ctx context.Context, shop *shophub
 	return sec, nil
 }
 
-// prepareRedis upgrades a 0.1.0 Redis and makes sure the Redis password Secret exists before
-// the Redis is applied. done=true means the caller must stop and return res (status is set).
+// prepareRedis upgrades a 0.1.0 Redis and returns the Redis password Secret the Redis and the
+// app must use, creating it if needed. done=true means the caller must stop and return res
+// (status is set).
+//
+// The current Secret name is the one the live Redis references. If that Secret was deleted, a
+// new password is generated under the next name (operator 0.2.1, research R2): the changed
+// name makes the Redis operator roll the Redis pod with the new password, keeping the PVC and
+// its data, and the app pods roll because their secretKeyRef and UID annotation change. The
+// Redis and its PVC are never deleted for this.
 func (r *ShopReconciler) prepareRedis(ctx context.Context, shop *shophubv1alpha1.Shop,
-	labels map[string]string) (res ctrl.Result, secretUID string, done bool, err error) {
+	labels map[string]string) (res ctrl.Result, sec *corev1.Secret, done bool, err error) {
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(RedisGVK)
 	err = r.Get(ctx, types.NamespacedName{Namespace: shop.Namespace, Name: resources.RedisName(shop)}, live)
@@ -271,48 +282,51 @@ func (r *ShopReconciler) prepareRedis(ctx context.Context, shop *shophubv1alpha1
 	case apierrors.IsNotFound(err):
 		live = nil
 	case err != nil:
-		return ctrl.Result{}, "", true, err
+		return ctrl.Result{}, nil, true, err
 	}
 
+	name := resources.RedisAuthSecretName(shop)
 	if live != nil {
 		if !live.GetDeletionTimestamp().IsZero() {
 			r.setReady(shop, false, ReasonDatabaseProvisioning,
 				fmt.Sprintf("waiting for the old Redis %s to be removed", live.GetName()))
-			return ctrl.Result{RequeueAfter: redisRecreateRequeue}, "", true, nil
+			return ctrl.Result{RequeueAfter: redisRecreateRequeue}, nil, true, nil
 		}
 		// A Redis without storage was created by operator 0.1.0. StatefulSet volume claims are
 		// immutable, so it is recreated once; 0.1.0 light shops hold no persistent data (R4).
 		if _, found, _ := unstructured.NestedMap(live.Object, "spec", "storage"); !found {
 			logf.FromContext(ctx).Info("Recreating Redis without storage (0.1.0 upgrade)", "redis", live.GetName())
 			if err := r.Delete(ctx, live, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
-				return ctrl.Result{}, "", true, fmt.Errorf("deleting 0.1.0 Redis %s: %w", live.GetName(), err)
+				return ctrl.Result{}, nil, true, fmt.Errorf("deleting 0.1.0 Redis %s: %w", live.GetName(), err)
 			}
 			r.setReady(shop, false, ReasonDatabaseProvisioning,
 				fmt.Sprintf("recreating Redis %s with password and storage", live.GetName()))
-			return ctrl.Result{RequeueAfter: redisRecreateRequeue}, "", true, nil
+			return ctrl.Result{RequeueAfter: redisRecreateRequeue}, nil, true, nil
+		}
+		if cur, _, _ := unstructured.NestedString(live.Object, "spec", "kubernetesConfig", "redisSecret", "name"); resources.RedisAuthSecretGeneration(shop, cur) > 0 {
+			name = cur
 		}
 	}
 
-	name := resources.RedisAuthSecretName(shop)
-	sec, err := r.getSecret(ctx, shop.Namespace, name)
+	sec, err = r.getSecret(ctx, shop.Namespace, name)
 	if err == nil {
-		return ctrl.Result{}, string(sec.UID), false, nil
+		return ctrl.Result{}, sec, false, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, "", true, err
+		return ctrl.Result{}, nil, true, err
 	}
 	if live != nil {
-		// A new password would not reach the running Redis, so it is not regenerated (R2).
-		r.setReady(shop, false, ReasonRedisCredentialsLost, fmt.Sprintf(
-			"Secret %s was deleted while Redis %s exists; delete and recreate the Shop to recover",
-			name, live.GetName()))
-		return ctrl.Result{}, "", true, nil
+		// The running Redis keeps the lost password until it restarts; switch it to a new Secret.
+		next := resources.NextRedisAuthSecretName(shop, name)
+		logf.FromContext(ctx).Info("Redis password Secret is missing; restarting Redis with a new password Secret",
+			"redis", live.GetName(), "missingSecret", name, "secret", next) // names only (SC-007)
+		name = next
 	}
 	sec, err = r.ensurePasswordSecret(ctx, shop, name, resources.RedisPasswordLength, labels)
 	if err != nil {
-		return ctrl.Result{}, "", true, err
+		return ctrl.Result{}, nil, true, err
 	}
-	return ctrl.Result{}, string(sec.UID), false, nil
+	return ctrl.Result{}, sec, false, nil
 }
 
 // refReady reads a referenced Wallet/DiscordChannel into obj and reports whether it is Ready.
@@ -372,7 +386,14 @@ func (r *ShopReconciler) databaseReady(ctx context.Context, shop *shophubv1alpha
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
-		return err == nil && sts.Status.ReadyReplicas >= 1, err
+		if err != nil {
+			return false, err
+		}
+		// Not ready while the Redis operator's change has not been rolled out (e.g. a restart
+		// with a new password Secret, operator 0.2.1).
+		rolledOut := sts.Status.ObservedGeneration >= sts.Generation &&
+			(sts.Status.UpdateRevision == "" || sts.Status.CurrentRevision == sts.Status.UpdateRevision)
+		return rolledOut && sts.Status.ReadyReplicas >= 1, nil
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(CNPGClusterGVK)

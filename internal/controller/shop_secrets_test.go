@@ -19,6 +19,7 @@ package controller
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -43,6 +44,29 @@ func getRedis(g Gomega, ns, name string) *unstructured.Unstructured {
 	u.SetGroupVersionKind(RedisGVK)
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, u)).To(Succeed())
 	return u
+}
+
+// expectRedisSecretSwitch waits until the light shop uses the Redis password Secret want:
+// the Secret exists and is controlled by the Shop, the same Redis (UID) references it and keeps
+// its storage, and the app's env and UID annotation follow it (operator 0.2.1).
+func expectRedisSecretSwitch(ns, shop, want string, redisUID types.UID) *corev1.Secret {
+	GinkgoHelper()
+	var sec *corev1.Secret
+	Eventually(func(g Gomega) {
+		sec = getSecret(g, ns, want)
+		r := getRedis(g, ns, shop+"-redis")
+		g.Expect(r.GetUID()).To(Equal(redisUID), "the Redis is never deleted")
+		name, _, _ := unstructured.NestedString(r.Object, "spec", "kubernetesConfig", "redisSecret", "name")
+		g.Expect(name).To(Equal(want))
+		_, found, _ := unstructured.NestedMap(r.Object, "spec", "storage")
+		g.Expect(found).To(BeTrue())
+		d := getDeployment(g, ns, shop)
+		g.Expect(envOf(d)["REDIS_PASSWORD"].ValueFrom.SecretKeyRef.Name).To(Equal(want))
+		g.Expect(d.Spec.Template.Annotations).To(HaveKeyWithValue(resources.AnnotationRedisSecretUID, string(sec.UID)))
+	}, reasonTimeout).Should(Succeed())
+	Expect(sec.Data[resources.PasswordKey]).To(HaveLen(resources.RedisPasswordLength))
+	expectControlledBy(sec, getShop(Default, ns, shop))
+	return sec
 }
 
 var _ = Describe("Shop reconciler: operator 0.2.0 (spec 003)", func() {
@@ -133,16 +157,61 @@ var _ = Describe("Shop reconciler: operator 0.2.0 (spec 003)", func() {
 		dyn, _, _ := unstructured.NestedStringSlice(r.Object, "spec", "redisConfig", "dynamicConfig")
 		Expect(dyn).To(ConsistOf("appendonly yes"))
 
-		By("reporting RedisCredentialsLost, not regenerating, when the Redis Secret is deleted")
+		By("regenerating a deleted Redis Secret under a new name, keeping the Redis and its storage (0.2.1)")
+		redisUID := r.GetUID()
 		Expect(k8sClient.Delete(ctx, sec)).To(Succeed())
-		Eventually(func(g Gomega) {
-			g.Expect(readyOf(getShop(g, ns, "lite").Status.Conditions)).To(Equal("False/" + ReasonRedisCredentialsLost))
-		}, reasonTimeout).Should(Succeed())
+		sec2 := expectRedisSecretSwitch(ns, "lite", "lite-redis-auth-2", redisUID)
+		Expect(sec2.Data[resources.PasswordKey]).NotTo(Equal(sec.Data[resources.PasswordKey]))
 		Consistently(func() bool {
 			var s corev1.Secret
 			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "lite-redis-auth"}, &s))
-		}, "3s").Should(BeTrue())
-		Expect(logBuf.String()).NotTo(ContainSubstring(string(sec.Data[resources.PasswordKey])))
+		}, "3s").Should(BeTrue(), "the old name is not reused")
+
+		By("doing it again for the next generation")
+		Expect(k8sClient.Delete(ctx, sec2)).To(Succeed())
+		sec3 := expectRedisSecretSwitch(ns, "lite", "lite-redis-auth-3", redisUID)
+
+		for _, s := range []*corev1.Secret{sec, sec2, sec3} {
+			Expect(logBuf.String()).NotTo(ContainSubstring(string(s.Data[resources.PasswordKey])))
+		}
+		Expect(logBuf.String()).To(ContainSubstring("restarting Redis with a new password Secret"))
+	})
+
+	It("reports a light shop not Ready while the Redis StatefulSet rolls out (0.2.1)", func() {
+		setupRefs()
+		Expect(k8sClient.Create(ctx, newShop(ns, "roll", "w", shophubv1alpha1.DatabaseLight))).To(Succeed())
+		Eventually(func(g Gomega) { getRedis(g, ns, "roll-redis") }, reasonTimeout).Should(Succeed())
+		makeRedisReady(ns, "roll-redis")
+		markDeploymentAvailable(ns, "roll", 2)
+		Eventually(func(g Gomega) {
+			g.Expect(readyOf(getShop(g, ns, "roll").Status.Conditions)).To(Equal("True/" + ReasonReady))
+		}, reasonTimeout).Should(Succeed())
+
+		setRevisions := func(current, update string) {
+			Eventually(func(g Gomega) {
+				var sts appsv1.StatefulSet
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "roll-redis"}, &sts)).To(Succeed())
+				sts.Status.CurrentRevision, sts.Status.UpdateRevision = current, update
+				g.Expect(k8sClient.Status().Update(ctx, &sts)).To(Succeed())
+			}, reasonTimeout).Should(Succeed())
+			// The StatefulSet is not watched: nudge a reconcile through the Shop.
+			Eventually(func(g Gomega) {
+				s := getShop(g, ns, "roll")
+				if s.Annotations == nil {
+					s.Annotations = map[string]string{}
+				}
+				s.Annotations["test/nudge"] = current + update
+				g.Expect(k8sClient.Update(ctx, s)).To(Succeed())
+			}, reasonTimeout).Should(Succeed())
+		}
+		setRevisions("roll-redis-1", "roll-redis-2")
+		Eventually(func(g Gomega) {
+			g.Expect(readyOf(getShop(g, ns, "roll").Status.Conditions)).To(Equal("False/" + ReasonDatabaseProvisioning))
+		}, reasonTimeout).Should(Succeed())
+		setRevisions("roll-redis-2", "roll-redis-2")
+		Eventually(func(g Gomega) {
+			g.Expect(readyOf(getShop(g, ns, "roll").Status.Conditions)).To(Equal("True/" + ReasonReady))
+		}, reasonTimeout).Should(Succeed())
 	})
 
 	It("recreates a 0.1.0 Redis without storage once, with no hand change (R4)", func() {

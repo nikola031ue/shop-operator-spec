@@ -20,6 +20,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,8 +41,35 @@ const (
 // AdminSecretName is the Secret holding a Shop's generated initial admin password (003 R1).
 func AdminSecretName(shop *shophubv1alpha1.Shop) string { return shop.Name + "-admin" }
 
-// RedisAuthSecretName is the Secret holding a light Shop's generated Redis password (003 R2).
+// RedisAuthSecretName is the first Secret holding a light Shop's generated Redis password
+// (003 R2). Later generations add a suffix (RedisAuthSecretGeneration).
 func RedisAuthSecretName(shop *shophubv1alpha1.Shop) string { return shop.Name + "-redis-auth" }
+
+// RedisAuthSecretGeneration returns the generation of a Redis password Secret name: 1 for
+// RedisAuthSecretName, n for "<that>-n" (n ≥ 2), and 0 for a name that is not the Shop's.
+func RedisAuthSecretGeneration(shop *shophubv1alpha1.Shop, name string) int {
+	base := RedisAuthSecretName(shop)
+	if name == base {
+		return 1
+	}
+	suffix, ok := strings.CutPrefix(name, base+"-")
+	if !ok || suffix == "" || suffix[0] == '0' {
+		return 0
+	}
+	n, err := strconv.Atoi(suffix)
+	if err != nil || n < 2 {
+		return 0
+	}
+	return n
+}
+
+// NextRedisAuthSecretName is the Secret name that replaces a lost Redis password Secret
+// (operator 0.2.1): giving the Redis a new Secret name makes the Redis operator roll its pod
+// with the new password, while the data on the PVC stays.
+func NextRedisAuthSecretName(shop *shophubv1alpha1.Shop, current string) string {
+	n := max(RedisAuthSecretGeneration(shop, current), 1) + 1
+	return RedisAuthSecretName(shop) + "-" + strconv.Itoa(n)
+}
 
 // RandomPassword returns n URL-safe characters from crypto/rand (6 bits each).
 func RandomPassword(n int) (string, error) {

@@ -39,9 +39,9 @@ const (
 	ReasonDiscordCredentialsMissing = "DiscordCredentialsMissing"
 	ReasonDiscordUnavailable        = "DiscordUnavailable"
 	ReasonDiscordForbidden          = "DiscordForbidden"
-	// ReasonRedisCredentialsLost: a light Shop's Redis password Secret was deleted while its
-	// Redis exists; it is not regenerated (spec 003 contracts/operator-0.2.0.md).
-	ReasonRedisCredentialsLost = "RedisCredentialsLost"
+	// RedisCredentialsLost (0.2.0) is retired in 0.2.1: a lost Redis password Secret is
+	// regenerated under a new name and the Redis restarts with it, reported as
+	// DatabaseProvisioning while it rolls out.
 )
 
 // Labels (data-model.md, FR-019; research R14).
