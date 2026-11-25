@@ -61,6 +61,9 @@ type Config struct {
 	// admits.
 	IngressNamespace string
 	ShopHubNamespace string
+	// ShopHubPodSelector (k=v,...) narrows the ShopHub peer to the app pods: other pods in that
+	// namespace (the database) can't reach a shop. Required.
+	ShopHubPodSelector string
 	// TrustedProxyHost is passed to the shop app as TRUSTED_PROXY_HOST: a DNS name (the headless
 	// traefik-proxies Service) whose addresses are the only peers whose forwarded headers count.
 	// Empty means no proxy is trusted.
@@ -69,6 +72,15 @@ type Config struct {
 
 // OperatorNamespace is the operator's own namespace (where the Discord token Secret lives).
 func (c Config) OperatorNamespace() string { return c.DiscordTokenSecret.Namespace }
+
+// ShopHubPodLabels returns the parsed --shophub-pod-selector (validated at startup).
+func (c Config) ShopHubPodLabels() map[string]string {
+	sel, err := labels.ConvertSelectorToLabelsMap(c.ShopHubPodSelector)
+	if err != nil {
+		return nil
+	}
+	return sel
+}
 
 // ShopsNamespace reports whether Shops and Wallets in ns are reconciled.
 func (c Config) ShopsNamespace(ns string) bool {
@@ -92,6 +104,9 @@ func (c Config) Validate() error {
 	}
 	if c.IngressClass == "" {
 		errs = append(errs, errors.New("--ingress-class must not be empty"))
+	}
+	if sel, err := labels.ConvertSelectorToLabelsMap(c.ShopHubPodSelector); err != nil || len(sel) == 0 {
+		errs = append(errs, fmt.Errorf("--shophub-pod-selector must be k=v[,k=v], got %q", c.ShopHubPodSelector))
 	}
 	if c.TrustedProxyHost != "" {
 		if msgs := validation.IsDNS1123Subdomain(c.TrustedProxyHost); len(msgs) > 0 {

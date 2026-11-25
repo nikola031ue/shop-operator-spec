@@ -222,7 +222,10 @@ var _ = Describe("Shop reconciler (US1)", func() {
 		Expect(np.Spec.Ingress).To(HaveLen(1))
 		Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 		Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", "traefik"))
-		Expect(np.Spec.Ingress[0].From[1].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", "shophub"))
+		Expect(np.Spec.Ingress[0].From[1].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", testShopHub))
+		Expect(np.Spec.Ingress[0].From[1].PodSelector.MatchLabels).To(Equal(map[string]string{
+			"app.kubernetes.io/name": testShopHub, "app.kubernetes.io/instance": testShopHub,
+		}))
 		Expect(envOf(getDeployment(Default, ns, testShopName))["TRUSTED_PROXY_HOST"].Value).To(Equal(testProxyHost))
 
 		By("restoring a hand-edited Ingress host")
