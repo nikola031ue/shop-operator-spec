@@ -189,7 +189,7 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 		AdminSecretUID: string(adminSec.UID),
 		ShopDomain:     r.Config.ShopDomain, IngressClass: r.Config.IngressClass,
 		IngressNamespace: r.Config.IngressNamespace, ShopHubNamespace: r.Config.ShopHubNamespace,
-		TrustedProxyCIDRs: r.Config.TrustedProxyCIDRs,
+		TrustedProxyHost: r.Config.TrustedProxyHost,
 	}
 	if redisSec != nil {
 		p.RedisSecretUID, p.RedisSecretName = string(redisSec.UID), redisSec.Name

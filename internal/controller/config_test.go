@@ -39,7 +39,7 @@ var _ = Describe("Config.Validate (FR-007, spec 004)", func() {
 		ShopImage: "nginx", ShopImageTag: testImageTag,
 		DiscordTokenSecret: types.NamespacedName{Namespace: "shop-operator-system", Name: testTokenSecret},
 		WatchNamespace:     "shops", ShopDomain: "shops.localhost", IngressClass: testIngressNS,
-		IngressNamespace: testIngressNS, ShopHubNamespace: "shophub", TrustedProxyCIDRs: "10.244.0.0/16, fd00::/8",
+		IngressNamespace: testIngressNS, ShopHubNamespace: "shophub", TrustedProxyHost: testProxyHost,
 	}
 
 	It("accepts a pinned image", func() {
@@ -64,12 +64,12 @@ var _ = Describe("Config.Validate (FR-007, spec 004)", func() {
 		Entry("no ingress class", func(c *Config) { c.IngressClass = "" }, "--ingress-class"),
 		Entry("no ingress namespace", func(c *Config) { c.IngressNamespace = "" }, "--ingress-namespace"),
 		Entry("no shophub namespace", func(c *Config) { c.ShopHubNamespace = "" }, "--shophub-namespace"),
-		Entry("bad CIDR", func(c *Config) { c.TrustedProxyCIDRs = "10.244.0.0/16,10.0.0.1" }, "--trusted-proxy-cidrs"),
+		Entry("CIDR as proxy host", func(c *Config) { c.TrustedProxyHost = "10.244.0.0/16" }, "--trusted-proxy-host"),
 	)
 
-	It("accepts an empty trusted CIDR list (the app then ignores forwarded headers)", func() {
+	It("accepts an empty trusted proxy host (the app then trusts no proxy)", func() {
 		c := valid
-		c.TrustedProxyCIDRs = ""
+		c.TrustedProxyHost = ""
 		Expect(c.Validate()).To(Succeed())
 	})
 

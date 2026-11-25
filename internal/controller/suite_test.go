@@ -123,11 +123,12 @@ var testConfig = Config{
 	// WatchNamespace stays empty: every test uses its own namespace. The scoped behaviour is
 	// tested with a second API server (scope_test.go).
 	ShopDomain: testShopDomain, IngressClass: testIngressNS, IngressNamespace: testIngressNS,
-	ShopHubNamespace: "shophub", TrustedProxyCIDRs: "10.244.0.0/16",
+	ShopHubNamespace: "shophub", TrustedProxyHost: testProxyHost,
 }
 
 // Values shared by the suite's and the scoped manager's configuration.
 const (
+	testProxyHost   = "traefik-proxies.traefik.svc.cluster.local"
 	testShopDomain  = "shops.localhost"
 	testIngressNS   = "traefik"
 	testTokenSecret = "shop-operator-discord"

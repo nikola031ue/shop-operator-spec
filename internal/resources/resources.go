@@ -83,12 +83,12 @@ type ShopParams struct {
 	RedisSecretName string
 	// Routing (spec 004, operator 0.3.0): public host suffix, IngressClass, the entry point's
 	// namespace and ShopHub's namespace (both admitted by the Shop NetworkPolicy), and the
-	// networks whose forwarded headers the app trusts.
-	ShopDomain        string
-	IngressClass      string
-	IngressNamespace  string
-	ShopHubNamespace  string
-	TrustedProxyCIDRs string
+	// DNS name whose addresses are the only proxies the app trusts.
+	ShopDomain       string
+	IngressClass     string
+	IngressNamespace string
+	ShopHubNamespace string
+	TrustedProxyHost string
 }
 
 // redisSecretName returns the Redis password Secret to reference.
@@ -146,8 +146,10 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 	env := []corev1.EnvVar{
 		{Name: "SHOP_NAME", Value: shop.Spec.ShopName},
 		{Name: "WALLET_ADDRESS", Value: p.WalletAddress},
-		// Forwarded headers are honoured only from these networks (spec 004 FR-022).
-		{Name: "TRUSTED_PROXY_CIDRS", Value: p.TrustedProxyCIDRs},
+		// Forwarded headers are honoured only from the addresses of this DNS name, the Traefik
+		// pods (spec 004 FR-022, research R5). Other pods the NetworkPolicy admits (ShopHub)
+		// are not trusted, so they can't forge the client address.
+		{Name: "TRUSTED_PROXY_HOST", Value: p.TrustedProxyHost},
 		secretEnv("ADMIN_PASSWORD", AdminSecretName(shop)),
 	}
 	annotations := map[string]string{AnnotationAdminSecretUID: p.AdminSecretUID}

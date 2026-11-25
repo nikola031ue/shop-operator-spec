@@ -20,8 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -63,8 +61,10 @@ type Config struct {
 	// admits.
 	IngressNamespace string
 	ShopHubNamespace string
-	// TrustedProxyCIDRs is passed to the shop app as TRUSTED_PROXY_CIDRS (comma-separated).
-	TrustedProxyCIDRs string
+	// TrustedProxyHost is passed to the shop app as TRUSTED_PROXY_HOST: a DNS name (the headless
+	// traefik-proxies Service) whose addresses are the only peers whose forwarded headers count.
+	// Empty means no proxy is trusted.
+	TrustedProxyHost string
 }
 
 // OperatorNamespace is the operator's own namespace (where the Discord token Secret lives).
@@ -93,8 +93,10 @@ func (c Config) Validate() error {
 	if c.IngressClass == "" {
 		errs = append(errs, errors.New("--ingress-class must not be empty"))
 	}
-	if _, err := ParseCIDRs(c.TrustedProxyCIDRs); err != nil {
-		errs = append(errs, fmt.Errorf("--trusted-proxy-cidrs: %w", err))
+	if c.TrustedProxyHost != "" {
+		if msgs := validation.IsDNS1123Subdomain(c.TrustedProxyHost); len(msgs) > 0 {
+			errs = append(errs, fmt.Errorf("--trusted-proxy-host must be a DNS name, got %q", c.TrustedProxyHost))
+		}
 	}
 	if c.ShopImage == "" {
 		errs = append(errs, errors.New("--shop-image must not be empty"))
@@ -106,24 +108,6 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("--discord-token-secret and the operator namespace must be set"))
 	}
 	return errors.Join(errs...)
-}
-
-// ParseCIDRs parses a comma-separated CIDR list; empty entries are skipped and an empty list is
-// allowed (the app then ignores forwarded headers).
-func ParseCIDRs(s string) ([]*net.IPNet, error) {
-	var out []*net.IPNet
-	for part := range strings.SplitSeq(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		_, n, err := net.ParseCIDR(part)
-		if err != nil {
-			return nil, fmt.Errorf("invalid CIDR %q", part)
-		}
-		out = append(out, n)
-	}
-	return out, nil
 }
 
 // CacheOptions restricts the Secret cache to Secrets the operator created (research R14) and,

@@ -35,7 +35,7 @@ func routedParams() ShopParams {
 	}
 	p.ShopDomain, p.IngressClass = "shops.localhost", tTraefik
 	p.IngressNamespace, p.ShopHubNamespace = tTraefik, "shophub"
-	p.TrustedProxyCIDRs = "10.244.0.0/16"
+	p.TrustedProxyHost = "traefik-proxies.traefik.svc.cluster.local"
 	return p
 }
 
@@ -105,7 +105,11 @@ func TestNetworkPolicy(t *testing.T) {
 
 func TestDeploymentTrustedProxyEnv(t *testing.T) {
 	d := Deployment(routedParams())
-	if got := envMap(d.Spec.Template.Spec.Containers[0])["TRUSTED_PROXY_CIDRS"].Value; got != "10.244.0.0/16" {
-		t.Fatalf("TRUSTED_PROXY_CIDRS = %q", got)
+	env := envMap(d.Spec.Template.Spec.Containers[0])
+	if got := env["TRUSTED_PROXY_HOST"].Value; got != "traefik-proxies.traefik.svc.cluster.local" {
+		t.Fatalf("TRUSTED_PROXY_HOST = %q", got)
+	}
+	if _, ok := env["TRUSTED_PROXY_CIDRS"]; ok {
+		t.Fatal("TRUSTED_PROXY_CIDRS must be gone: the pod network includes ShopHub, which could forge the address")
 	}
 }

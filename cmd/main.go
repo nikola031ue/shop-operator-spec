@@ -102,8 +102,8 @@ func main() {
 		"Namespace of the entry point; the Shop NetworkPolicy admits it.")
 	flag.StringVar(&cfg.ShopHubNamespace, "shophub-namespace", "shophub",
 		"Namespace of ShopHub; the Shop NetworkPolicy admits it.")
-	flag.StringVar(&cfg.TrustedProxyCIDRs, "trusted-proxy-cidrs", "10.244.0.0/16",
-		"Comma-separated networks whose forwarded headers the shop app trusts (TRUSTED_PROXY_CIDRS).")
+	flag.StringVar(&cfg.TrustedProxyHost, "trusted-proxy-host", "traefik-proxies.traefik.svc.cluster.local",
+		"DNS name whose addresses are the only proxies the shop app trusts (TRUSTED_PROXY_HOST).")
 	opts := zap.Options{
 		Development: false,
 	}
