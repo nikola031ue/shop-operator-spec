@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -33,10 +34,12 @@ import (
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
 )
 
-var _ = Describe("Config.Validate (FR-007)", func() {
+var _ = Describe("Config.Validate (FR-007, spec 004)", func() {
 	valid := Config{
 		ShopImage: "nginx", ShopImageTag: testImageTag,
-		DiscordTokenSecret: types.NamespacedName{Namespace: "shop-operator-system", Name: "shop-operator-discord"},
+		DiscordTokenSecret: types.NamespacedName{Namespace: "shop-operator-system", Name: testTokenSecret},
+		WatchNamespace:     "shops", ShopDomain: "shops.localhost", IngressClass: testIngressNS,
+		IngressNamespace: testIngressNS, ShopHubNamespace: "shophub", TrustedProxyHost: testProxyHost,
 	}
 
 	It("accepts a pinned image", func() {
@@ -55,7 +58,40 @@ var _ = Describe("Config.Validate (FR-007)", func() {
 		Entry("empty tag", func(c *Config) { c.ShopImageTag = "" }, "pinned version"),
 		Entry("empty image", func(c *Config) { c.ShopImage = "" }, "--shop-image"),
 		Entry("no token secret", func(c *Config) { c.DiscordTokenSecret.Name = "" }, "--discord-token-secret"),
+		Entry("no watch namespace", func(c *Config) { c.WatchNamespace = "" }, "--watch-namespace"),
+		Entry("bad watch namespace", func(c *Config) { c.WatchNamespace = "Shops" }, "--watch-namespace"),
+		Entry("no shop domain", func(c *Config) { c.ShopDomain = "" }, "--shop-domain"),
+		Entry("no ingress class", func(c *Config) { c.IngressClass = "" }, "--ingress-class"),
+		Entry("no ingress namespace", func(c *Config) { c.IngressNamespace = "" }, "--ingress-namespace"),
+		Entry("no shophub namespace", func(c *Config) { c.ShopHubNamespace = "" }, "--shophub-namespace"),
+		Entry("CIDR as proxy host", func(c *Config) { c.TrustedProxyHost = "10.244.0.0/16" }, "--trusted-proxy-host"),
 	)
+
+	It("accepts an empty trusted proxy host (the app then trusts no proxy)", func() {
+		c := valid
+		c.TrustedProxyHost = ""
+		Expect(c.Validate()).To(Succeed())
+	})
+
+	It("scopes the cache to the watched namespace, plus the operator namespace for DiscordChannels", func() {
+		opts := valid.CacheOptions()
+		Expect(opts.DefaultNamespaces).To(HaveLen(1))
+		Expect(opts.DefaultNamespaces).To(HaveKey("shops"))
+		for obj, bo := range opts.ByObject {
+			switch obj.(type) {
+			case *corev1.Secret:
+				Expect(bo.Label.String()).To(Equal(LabelManagedBy + "=" + ManagedByValue))
+				Expect(bo.Namespaces).To(HaveLen(2))
+				Expect(bo.Namespaces).To(HaveKey("shop-operator-system"))
+			case *shophubv1alpha1.DiscordChannel:
+				Expect(bo.Namespaces).To(HaveLen(2))
+				Expect(bo.Namespaces).To(HaveKey("shop-operator-system"))
+			default:
+				Fail("unexpected ByObject entry")
+			}
+		}
+		Expect(opts.ByObject).To(HaveLen(2))
+	})
 })
 
 var _ = Describe("DetectDatabaseKinds (research R5)", func() {

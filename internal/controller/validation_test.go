@@ -114,6 +114,12 @@ var _ = Describe("CRD admission validation (contracts/crds.md, SC-004)", func() 
 			expectRejected(err, "metadata.name must be at most 40 characters")
 		})
 
+		// The host <name>.<shop-domain> must stay one label under the wildcard certificate.
+		It("rejects a name containing a dot", func() {
+			err := k8sClient.Create(ctx, newObj("Shop", "acme.shop", validShopSpec()))
+			expectRejected(err, "metadata.name must not contain dots")
+		})
+
 		It("rejects changing database or shopName", func() {
 			obj := newObj("Shop", uniqueName("immut"), validShopSpec())
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())

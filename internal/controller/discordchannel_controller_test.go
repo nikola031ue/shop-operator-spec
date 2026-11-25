@@ -122,7 +122,7 @@ func startDiscordManager(ns string, fake *fakeDiscord, guildID string) {
 	dcConfig := testConfig
 	dcConfig.DiscordGuildID = guildID
 	dcConfig.DiscordTokenSecret = types.NamespacedName{Namespace: ns, Name: "discord-token"}
-	opts := CacheOptions()
+	opts := testConfig.CacheOptions()
 	opts.DefaultNamespaces = map[string]cache.Config{ns: {}}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme, Metrics: metricsserver.Options{BindAddress: "0"},

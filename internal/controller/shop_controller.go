@@ -24,6 +24,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -78,6 +79,8 @@ const redisRecreateRequeue = 5 * time.Second
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // Generated admin and Redis password Secrets (spec 003 contracts/operator-0.2.0.md).
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// Per-Shop routing children (spec 004 operator 0.3.0).
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives a Shop's application, Service and database toward its spec and reports
 // readiness. Children carry a controller owner reference, so deleting the Shop garbage-collects
@@ -91,6 +94,9 @@ func (r *ShopReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if !shop.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if !r.Config.ShopsNamespace(shop.Namespace) {
+		return ctrl.Result{}, nil // the cache never delivers these; defence in depth (FR-026)
 	}
 	orig := shop.DeepCopy()
 
@@ -108,7 +114,7 @@ func (r *ShopReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Shop) (ctrl.Result, error) {
 	desired := shop.Spec.Availability.Replicas()
 	shop.Status.Replicas = desired
-	shop.Status.URL = resources.URL(shop)
+	shop.Status.URL = resources.URL(shop, r.Config.ShopDomain)
 
 	// 1. References: both must be Ready before the app is deployed (FR-001).
 	var w shophubv1alpha1.Wallet
@@ -181,15 +187,25 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 	p := resources.ShopParams{
 		Shop: shop, Image: image, WalletAddress: w.Status.Address, Labels: labels,
 		AdminSecretUID: string(adminSec.UID),
+		ShopDomain:     r.Config.ShopDomain, IngressClass: r.Config.IngressClass,
+		IngressNamespace: r.Config.IngressNamespace, ShopHubNamespace: r.Config.ShopHubNamespace,
+		TrustedProxyHost: r.Config.TrustedProxyHost,
 	}
 	if redisSec != nil {
 		p.RedisSecretUID, p.RedisSecretName = string(redisSec.UID), redisSec.Name
+	}
+	// The NetworkPolicy goes first so the pods are never reachable from outside the platform.
+	if err := r.apply(ctx, shop, resources.NetworkPolicy(p)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("applying NetworkPolicy: %w", err)
 	}
 	if err := r.apply(ctx, shop, resources.Deployment(p)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying Deployment: %w", err)
 	}
 	if err := r.apply(ctx, shop, resources.Service(p)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying Service: %w", err)
+	}
+	if err := r.apply(ctx, shop, resources.Ingress(p)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("applying Ingress: %w", err)
 	}
 
 	// 4. Readiness (research R12).
@@ -442,6 +458,9 @@ func (r *ShopReconciler) patchStatus(ctx context.Context, shop, orig *shophubv1a
 // shopsReferencingFn maps a Wallet/DiscordChannel event to the Shops that reference it.
 func (r *ShopReconciler) shopsReferencingFn(field string) handler.MapFunc {
 	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		if !r.Config.ShopsNamespace(o.GetNamespace()) {
+			return nil // e.g. the platform alerts channel in the operator namespace
+		}
 		var shops shophubv1alpha1.ShopList
 		if err := r.List(ctx, &shops, client.InNamespace(o.GetNamespace()),
 			client.MatchingFields{field: o.GetName()}); err != nil {
@@ -463,6 +482,8 @@ func (r *ShopReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&shophubv1alpha1.Shop{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.Ingress{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&corev1.Secret{}). // generated password Secrets (003); the cache is label-filtered
 		Watches(&shophubv1alpha1.Wallet{}, handler.EnqueueRequestsFromMapFunc(r.shopsReferencingFn(IndexShopWalletRef))).
 		Watches(&shophubv1alpha1.DiscordChannel{}, handler.EnqueueRequestsFromMapFunc(r.shopsReferencingFn(IndexShopDiscordChannelRef)))

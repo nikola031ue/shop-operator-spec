@@ -80,6 +80,12 @@ type DiscordChannelReconciler struct {
 // +kubebuilder:rbac:groups=shophub.io,resources=discordchannels/finalizers,verbs=update
 // +kubebuilder:rbac:groups=shophub.io,resources=shops,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// The platform alerts channel lives in the operator's own namespace ("system" is the kustomize
+// placeholder; hack/sync-chart.sh writes this Role into the release namespace). Spec 004 FR-026.
+// +kubebuilder:rbac:groups=shophub.io,resources=discordchannels,verbs=get;list;watch;update;patch,namespace=system
+// +kubebuilder:rbac:groups=shophub.io,resources=discordchannels/status,verbs=get;update;patch,namespace=system
+// +kubebuilder:rbac:groups=shophub.io,resources=discordchannels/finalizers,verbs=update,namespace=system
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete,namespace=system
 
 // Reconcile creates or adopts the Discord channel and its webhook, stores the webhook in an
 // owned Secret, and removes the channel on deletion. The token and webhook URL never appear in
@@ -89,11 +95,18 @@ func (r *DiscordChannelReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &d); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if !r.Config.ShopsNamespace(d.Namespace) && d.Namespace != r.Config.OperatorNamespace() {
+		return ctrl.Result{}, nil // the cache never delivers these; defence in depth (FR-026)
+	}
 	orig := d.DeepCopy()
 
-	usedBy, err := shopsReferencing(ctx, r.Client, d.Namespace, IndexShopDiscordChannelRef, d.Name)
-	if err != nil {
-		return ctrl.Result{}, err
+	// Shops exist only in the shops namespace; the platform channel is never referenced.
+	var usedBy []string
+	if r.Config.ShopsNamespace(d.Namespace) {
+		var err error
+		if usedBy, err = shopsReferencing(ctx, r.Client, d.Namespace, IndexShopDiscordChannelRef, d.Name); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	d.Status.UsedBy = usedBy
 

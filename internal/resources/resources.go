@@ -53,11 +53,6 @@ func RedisName(shop *shophubv1alpha1.Shop) string       { return shop.Name + "-r
 // CNPGAppSecretName is the Secret CNPG generates for the app user; key "uri" holds the URL.
 func CNPGAppSecretName(shop *shophubv1alpha1.Shop) string { return CNPGClusterName(shop) + "-app" }
 
-// URL is the in-cluster address of a shop (FR-008).
-func URL(shop *shophubv1alpha1.Shop) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local", ServiceName(shop), shop.Namespace)
-}
-
 // ErrUnpinnedImage is returned for an empty or `latest` image tag (FR-007, Principle II).
 var ErrUnpinnedImage = errors.New("image tag must be pinned (not empty, not latest)")
 
@@ -86,6 +81,14 @@ type ShopParams struct {
 	// RedisSecretName is the light Shop's current Redis password Secret; empty means
 	// RedisAuthSecretName (operator 0.2.1 switches to a new name when the Secret is lost).
 	RedisSecretName string
+	// Routing (spec 004, operator 0.3.0): public host suffix, IngressClass, the entry point's
+	// namespace and ShopHub's namespace (both admitted by the Shop NetworkPolicy), and the
+	// DNS name whose addresses are the only proxies the app trusts.
+	ShopDomain       string
+	IngressClass     string
+	IngressNamespace string
+	ShopHubNamespace string
+	TrustedProxyHost string
 }
 
 // redisSecretName returns the Redis password Secret to reference.
@@ -143,6 +146,10 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 	env := []corev1.EnvVar{
 		{Name: "SHOP_NAME", Value: shop.Spec.ShopName},
 		{Name: "WALLET_ADDRESS", Value: p.WalletAddress},
+		// Forwarded headers are honoured only from the addresses of this DNS name, the Traefik
+		// pods (spec 004 FR-022, research R5). Other pods the NetworkPolicy admits (ShopHub)
+		// are not trusted, so they can't forge the client address.
+		{Name: "TRUSTED_PROXY_HOST", Value: p.TrustedProxyHost},
 		secretEnv("ADMIN_PASSWORD", AdminSecretName(shop)),
 	}
 	annotations := map[string]string{AnnotationAdminSecretUID: p.AdminSecretUID}

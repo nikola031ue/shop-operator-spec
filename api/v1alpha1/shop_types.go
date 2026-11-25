@@ -130,6 +130,7 @@ type ShopStatus struct {
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 40",message="metadata.name must be at most 40 characters"
+// +kubebuilder:validation:XValidation:rule="!self.metadata.name.contains('.')",message="metadata.name must not contain dots"
 
 // Shop is a user's shop: the application, its database and its wallet/alerting references.
 type Shop struct {
