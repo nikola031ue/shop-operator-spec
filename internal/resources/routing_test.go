@@ -25,7 +25,10 @@ import (
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
 )
 
-const tTraefik = "traefik"
+const (
+	tTraefik = "traefik"
+	tShopHub = "shophub"
+)
 
 func routedParams() ShopParams {
 	p := params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard))
@@ -34,7 +37,8 @@ func routedParams() ShopParams {
 		"app.kubernetes.io/managed-by": "shop-operator", "shophub.io/owner": tOwner, "shophub.io/shop": tShop,
 	}
 	p.ShopDomain, p.IngressClass = "shops.localhost", tTraefik
-	p.IngressNamespace, p.ShopHubNamespace = tTraefik, "shophub"
+	p.IngressNamespace, p.ShopHubNamespace = tTraefik, tShopHub
+	p.ShopHubPodLabels = map[string]string{"app.kubernetes.io/name": tShopHub, "app.kubernetes.io/instance": tShopHub}
 	p.TrustedProxyHost = "traefik-proxies.traefik.svc.cluster.local"
 	return p
 }
@@ -90,13 +94,22 @@ func TestNetworkPolicy(t *testing.T) {
 	rule := np.Spec.Ingress[0]
 	nss := make([]string, 0, len(rule.From))
 	for _, f := range rule.From {
-		if f.PodSelector != nil || f.IPBlock != nil || f.NamespaceSelector == nil || len(f.NamespaceSelector.MatchLabels) != 1 {
-			t.Fatalf("peer must be a namespace selector only: %+v", f)
+		if f.IPBlock != nil || f.NamespaceSelector == nil || len(f.NamespaceSelector.MatchLabels) != 1 {
+			t.Fatalf("peer must use a namespace selector: %+v", f)
 		}
 		nss = append(nss, f.NamespaceSelector.MatchLabels[LabelNamespaceName])
 	}
-	if len(nss) != 2 || nss[0] != tTraefik || nss[1] != "shophub" {
+	if len(nss) != 2 || nss[0] != tTraefik || nss[1] != tShopHub {
 		t.Fatalf("namespaces = %v", nss)
+	}
+	if rule.From[0].PodSelector != nil {
+		t.Fatalf("the entry point peer is the whole namespace: %+v", rule.From[0].PodSelector)
+	}
+	// ShopHub: only its app pods, not the database or anything else in that namespace.
+	sh := rule.From[1].PodSelector
+	if sh == nil || len(sh.MatchLabels) != 2 || sh.MatchLabels["app.kubernetes.io/name"] != tShopHub ||
+		sh.MatchLabels["app.kubernetes.io/instance"] != tShopHub {
+		t.Fatalf("shophub podSelector = %+v", sh)
 	}
 	if len(rule.Ports) != 1 || *rule.Ports[0].Protocol != corev1.ProtocolTCP || rule.Ports[0].Port.IntValue() != HTTPPort {
 		t.Fatalf("ports = %+v", rule.Ports)

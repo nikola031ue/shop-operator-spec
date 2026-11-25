@@ -170,7 +170,8 @@ and the token Secret is re-checked every minute.
 | `--shop-domain` | `shopDomain` | `shops.localhost` | A Shop is served at `https://<shop>.<shop-domain>` (`status.url`) |
 | `--ingress-class` | `ingressClassName` | `traefik` | `spec.ingressClassName` of every Shop Ingress |
 | `--ingress-namespace` | `ingressNamespace` | `traefik` | Entry point namespace, admitted by the Shop NetworkPolicy |
-| `--shophub-namespace` | `shophubNamespace` | `shophub` | ShopHub namespace, admitted by the Shop NetworkPolicy |
+| `--shophub-namespace` | `shophubNamespace` | `shophub` | ShopHub namespace; the Shop NetworkPolicy admits the ShopHub app pods there |
+| `--shophub-pod-selector` | `shophubPodLabels` | `app.kubernetes.io/name=shophub,app.kubernetes.io/instance=shophub` | Labels of the ShopHub app pods; only they are admitted from the ShopHub namespace |
 | `--trusted-proxy-host` | `trustedProxyHost` | `traefik-proxies.traefik.svc.cluster.local` | Passed to the shop app as `TRUSTED_PROXY_HOST`: forwarded headers count only from the addresses this name resolves to (the Traefik pods). Empty trusts no proxy |
 
 ### Namespaces and permissions (0.3.0)

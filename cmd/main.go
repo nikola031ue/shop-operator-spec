@@ -101,7 +101,10 @@ func main() {
 	flag.StringVar(&cfg.IngressNamespace, "ingress-namespace", "traefik",
 		"Namespace of the entry point; the Shop NetworkPolicy admits it.")
 	flag.StringVar(&cfg.ShopHubNamespace, "shophub-namespace", "shophub",
-		"Namespace of ShopHub; the Shop NetworkPolicy admits it.")
+		"Namespace of ShopHub; the Shop NetworkPolicy admits the ShopHub app pods there.")
+	flag.StringVar(&cfg.ShopHubPodSelector, "shophub-pod-selector",
+		"app.kubernetes.io/name=shophub,app.kubernetes.io/instance=shophub",
+		"Labels (k=v,...) of the ShopHub app pods; only they are admitted from --shophub-namespace.")
 	flag.StringVar(&cfg.TrustedProxyHost, "trusted-proxy-host", "traefik-proxies.traefik.svc.cluster.local",
 		"DNS name whose addresses are the only proxies the shop app trusts (TRUSTED_PROXY_HOST).")
 	opts := zap.Options{

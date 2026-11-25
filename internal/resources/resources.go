@@ -88,6 +88,8 @@ type ShopParams struct {
 	IngressClass     string
 	IngressNamespace string
 	ShopHubNamespace string
+	// ShopHubPodLabels select the ShopHub app pods inside ShopHubNamespace.
+	ShopHubPodLabels map[string]string
 	TrustedProxyHost string
 }
 

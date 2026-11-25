@@ -69,9 +69,9 @@ func Ingress(p ShopParams) *networkingv1.Ingress {
 	}
 }
 
-// NetworkPolicy admits traffic to the shop pods only from the entry point's namespace and from
-// ShopHub's namespace, on the app port. With it, anything in the trusted proxy networks that
-// reaches the app is platform code (spec 004 research R5).
+// NetworkPolicy admits traffic to the shop pods, on the app port, only from the entry point's
+// namespace and from the ShopHub app pods (for the FR-016 hand-off status read). Forwarded
+// headers are trusted from Traefik alone, so ShopHub is an untrusted peer (spec 004 research R5).
 func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 	shop := p.Shop
 	tcp := corev1.ProtocolTCP
@@ -81,6 +81,9 @@ func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 			MatchLabels: map[string]string{LabelNamespaceName: ns},
 		}}
 	}
+	// Namespace and pod selector in one peer: both must match.
+	shophub := from(p.ShopHubNamespace)
+	shophub.PodSelector = &metav1.LabelSelector{MatchLabels: p.ShopHubPodLabels}
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -91,7 +94,7 @@ func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 			PodSelector: metav1.LabelSelector{MatchLabels: selectorLabels(shop)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From:  []networkingv1.NetworkPolicyPeer{from(p.IngressNamespace), from(p.ShopHubNamespace)},
+				From:  []networkingv1.NetworkPolicyPeer{from(p.IngressNamespace), shophub},
 				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
 			}},
 		},
