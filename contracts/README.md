@@ -38,5 +38,15 @@ deploys `build/MockUSDT.bin` and checks name, symbol, decimals, the mint cap (`M
 Deployed by hand from the maintainer's own MetaMask with [Remix](https://remix.ethereum.org); no
 deploy key is stored anywhere (spec 005 clarification). Steps: spec 005 tasks.md T004.
 
-**Deployed address (Sepolia)**: _not deployed yet_ — recorded here and in
-`kube-state/clusters/local/shop-operator/values.yaml` (`payments.tokenAddress`).
+**Deployed address (Sepolia, chain 11155111)**: `0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2`
+([explorer](https://sepolia.etherscan.io/address/0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2),
+[Sourcify](https://repo.sourcify.dev/11155111/0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2)).
+Deployed 2026-11-27 by the maintainer with Remix from `main` at `f54cecf`. It goes into
+`kube-state/clusters/local/shop-operator/values.yaml` as `payments.tokenAddress`.
+
+Checked after the deploy:
+- the deployed runtime code, with the CBOR metadata stripped, is the runtime part of
+  `build/MockUSDT.bin`;
+- `name()` "Mock USDT", `symbol()` "mUSDT", `decimals()` 6, `MAX_MINT()` 1,000,000,000,
+  `totalSupply()` 0;
+- Sourcify: exact match (creation and runtime).
