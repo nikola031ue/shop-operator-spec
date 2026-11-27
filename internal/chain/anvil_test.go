@@ -3,6 +3,7 @@ package chain
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -104,9 +106,17 @@ func (a *anvil) send(t *testing.T, from int, to *common.Address, data []byte) *t
 	if err := a.client.SendTransaction(ctx, signed); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	receipt, err := a.client.TransactionReceipt(ctx, signed.Hash())
-	if err != nil {
-		t.Fatalf("receipt: %v", err)
+	// Anvil mines at once, but the receipt can lag the send by a moment on a slow runner.
+	var receipt *types.Receipt
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		receipt, err = a.client.TransactionReceipt(ctx, signed.Hash())
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ethereum.NotFound) || time.Now().After(deadline) {
+			t.Fatalf("receipt: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		t.Fatalf("transaction %s reverted", signed.Hash())
