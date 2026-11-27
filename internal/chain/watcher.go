@@ -25,6 +25,7 @@ import (
 
 // Reader is the part of an Ethereum JSON-RPC client the watcher uses (ethclient implements it).
 type Reader interface {
+	ChainID(ctx context.Context) (*big.Int, error)
 	BlockNumber(ctx context.Context) (uint64, error)
 	FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
 	HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error)
@@ -112,9 +113,13 @@ func (w *Watcher) Pass(ctx context.Context) time.Duration {
 
 	reader, err := w.connect(ctx)
 	if err != nil {
-		reason := shophubv1alpha1.PaymentsReasonRPCCredentialsMissing
-		if !errors.Is(err, errNoRPCSecret) {
-			reason = shophubv1alpha1.PaymentsReasonProviderError
+		reason := shophubv1alpha1.PaymentsReasonProviderError
+		switch {
+		case errors.Is(err, errNoRPCSecret):
+			reason = shophubv1alpha1.PaymentsReasonRPCCredentialsMissing
+		case errors.Is(err, errWrongChain):
+			reason = shophubv1alpha1.PaymentsReasonWrongChain
+			w.Log.Info("The chain provider is on the wrong chain", "error", err.Error())
 		}
 		w.markAll(ctx, wallets, reason, err.Error())
 		return w.fail(poll)
@@ -131,6 +136,19 @@ func (w *Watcher) Pass(ctx context.Context) time.Duration {
 	}
 	confirmed := head - conf
 	headers := map[uint64]*types.Header{}
+
+	// A read position above the head was written against another chain or endpoint. Waiting for
+	// the chain to get there would silently miss every payment until then, so the Wallet is
+	// reported and left out until an admin clears its status.payments.
+	wallets = slices.DeleteFunc(wallets, func(wl shophubv1alpha1.Wallet) bool {
+		if c := cursor(&wl); c > 0 && uint64(c) > head {
+			w.mark(ctx, &wl, shophubv1alpha1.PaymentsReasonCursorAheadOfChain, fmt.Sprintf(
+				"the read position (block %d) is above the chain head (block %d): it comes from another "+
+					"chain or endpoint; payments to this address are not read until status.payments is cleared", c, head))
+			return true
+		}
+		return false
+	})
 
 	// New Wallets start at the confirmed head: nothing before their creation can pay their orders.
 	for i := range wallets {
@@ -191,7 +209,10 @@ func (w *Watcher) fail(poll time.Duration) time.Duration {
 	return w.backoff
 }
 
-var errNoRPCSecret = errors.New("the RPC endpoint Secret is missing or has no url")
+var (
+	errNoRPCSecret = errors.New("the RPC endpoint Secret is missing or has no url")
+	errWrongChain  = errors.New("the chain provider is on the wrong chain")
+)
 
 // connect (re)dials when the endpoint in the hand-made Secret changes. The URL carries an API
 // key: only its host is ever logged, and it never goes into status.
@@ -216,7 +237,16 @@ func (w *Watcher) connect(ctx context.Context) (Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connecting to the chain provider at %s failed", host)
 	}
-	w.Log.Info("Connected to the chain provider", "host", host)
+	// A reader on another chain is never cached, so a fixed Secret is picked up on the next pass.
+	id, err := r.ChainID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading the chain id from the provider at %s failed", host)
+	}
+	if want := w.Config.Payments.ChainID; !id.IsInt64() || id.Int64() != want {
+		return nil, fmt.Errorf("%w: the provider at %s serves chain id %s, payments use chain id %d; "+
+			"check the URL in the RPC Secret", errWrongChain, host, id, want)
+	}
+	w.Log.Info("Connected to the chain provider", "host", host, "chainId", id.String())
 	w.reader, w.readerURL = r, endpoint
 	return r, nil
 }

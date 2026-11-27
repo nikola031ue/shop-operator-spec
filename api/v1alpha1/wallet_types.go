@@ -88,7 +88,8 @@ type WalletPayments struct {
 	ScannedThroughTime *metav1.Time `json:"scannedThroughTime,omitempty"`
 
 	// lastError is the reason code of the watcher's last failure for this address
-	// (RPCCredentialsMissing, ProviderError or ShopUnreachable); empty after a success.
+	// (RPCCredentialsMissing, ProviderError, WrongChain, CursorAheadOfChain or ShopUnreachable);
+	// empty after a success.
 	// +optional
 	LastError string `json:"lastError,omitempty"`
 
@@ -115,6 +116,13 @@ const (
 	// PaymentsReasonStalled: the chain hasn't been read for this address for longer than the
 	// stall threshold, although nothing reported an error (e.g. the watcher loop stopped).
 	PaymentsReasonStalled = "Stalled"
+	// PaymentsReasonWrongChain: the provider endpoint is on another chain than the configured
+	// chain id (e.g. a mainnet URL in the RPC Secret); nothing is read until it is fixed.
+	PaymentsReasonWrongChain = "WrongChain"
+	// PaymentsReasonCursorAheadOfChain: this Wallet's scannedThroughBlock is above the chain's
+	// head, so it was written against another chain or endpoint; this address is not read until
+	// an admin clears status.payments (the watcher then starts it at the confirmed head).
+	PaymentsReasonCursorAheadOfChain = "CursorAheadOfChain"
 )
 
 // +kubebuilder:object:root=true

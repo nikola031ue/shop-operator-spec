@@ -173,6 +173,8 @@ func TestPaymentsWatching(t *testing.T) {
 		{"just under the threshold", on, at(5 * time.Minute), true, shophubv1alpha1.PaymentsReasonWatching},
 		{"stalled", on, at(5*time.Minute + 2*time.Second), false, shophubv1alpha1.PaymentsReasonStalled},
 		{"watcher error wins", on, &shophubv1alpha1.WalletPayments{LastError: shophubv1alpha1.PaymentsReasonProviderError}, false, shophubv1alpha1.PaymentsReasonProviderError},
+		{"wrong chain", on, &shophubv1alpha1.WalletPayments{LastError: shophubv1alpha1.PaymentsReasonWrongChain}, false, shophubv1alpha1.PaymentsReasonWrongChain},
+		{"read position above the head, even if recent", on, &shophubv1alpha1.WalletPayments{ScannedThroughBlock: 9, ScannedThroughTime: at(0).ScannedThroughTime, LastError: shophubv1alpha1.PaymentsReasonCursorAheadOfChain}, false, shophubv1alpha1.PaymentsReasonCursorAheadOfChain},
 	}
 	for _, c := range cases {
 		ok, reason, _ := PaymentsWatching(c.cfg, c.p, now)
