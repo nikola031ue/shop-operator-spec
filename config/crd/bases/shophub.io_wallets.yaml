@@ -155,7 +155,8 @@ spec:
                   lastError:
                     description: |-
                       lastError is the reason code of the watcher's last failure for this address
-                      (RPCCredentialsMissing, ProviderError or ShopUnreachable); empty after a success.
+                      (RPCCredentialsMissing, ProviderError, WrongChain, CursorAheadOfChain or ShopUnreachable);
+                      empty after a success.
                     type: string
                   lastErrorMessage:
                     description: lastErrorMessage explains lastError; it never contains

@@ -148,6 +148,7 @@ func newHarness(t *testing.T, rangeSize uint64, withRPCSecret bool) *harness {
 
 	payments := controller.DefaultPayments(operatorNS)
 	payments.TokenAddress = tokenAddr.Hex()
+	payments.ChainID = 31337 // Anvil's chain id (startAnvil)
 	payments.Confirmations = 3
 	payments.LogsBlockRange = rangeSize
 	h := &harness{a: a, tok: tok, token: tokenAddr, shop: shop, k8s: k8s,
@@ -335,5 +336,81 @@ func TestWatcherReportsMissingCredentialsAndHidesTheURL(t *testing.T) {
 	}
 	if strings.Contains(p.LastErrorMessage, "key-SECRET") {
 		t.Fatalf("the provider URL leaked into status: %q", p.LastErrorMessage)
+	}
+}
+
+// An endpoint on another chain (e.g. a mainnet URL in the RPC Secret) is reported as WrongChain
+// and nothing is read; the reader isn't kept, so once the endpoint is right the next pass works.
+func TestWatcherRefusesAProviderOnTheWrongChain(t *testing.T) {
+	h := newHarness(t, 10, true)
+	ctx := context.Background()
+	h.mine(t, 5)
+	h.watcher.Config.Payments.ChainID = 11155111 // Anvil serves 31337
+
+	h.watcher.Pass(ctx)
+	p := h.payments(t)
+	if p.LastError != shophubv1alpha1.PaymentsReasonWrongChain || p.ScannedThroughBlock != 0 {
+		t.Fatalf("status on the wrong chain = %+v", p)
+	}
+	if !strings.Contains(p.LastErrorMessage, "31337") || !strings.Contains(p.LastErrorMessage, "11155111") {
+		t.Fatalf("the message should name both chain ids: %q", p.LastErrorMessage)
+	}
+	if strings.Contains(p.LastErrorMessage, h.a.endpoint) {
+		t.Fatalf("the provider URL leaked into status: %q", p.LastErrorMessage)
+	}
+	if len(h.reader.ranges) != 0 {
+		t.Fatalf("logs were read from the wrong chain: %v", h.reader.ranges)
+	}
+
+	h.watcher.Config.Payments.ChainID = 31337
+	h.watcher.Pass(ctx)
+	if p := h.payments(t); p.LastError != "" || p.ScannedThroughBlock != int64(h.head(t)-3) {
+		t.Fatalf("status once the chain is right = %+v", p)
+	}
+}
+
+// A read position above the head (written against another chain) is an error, not a wait: the
+// Wallet reports CursorAheadOfChain, keeps its value, gets no deliveries, and restarts at the
+// confirmed head once an admin clears status.payments.
+func TestWatcherReportsAReadPositionAboveTheHead(t *testing.T) {
+	h := newHarness(t, 10, true)
+	ctx := context.Background()
+	h.mine(t, 5)
+	h.watcher.Pass(ctx)
+
+	ahead := int64(h.head(t) + 1000)
+	var wl shophubv1alpha1.Wallet
+	if err := h.k8s.Get(ctx, h.wallet, &wl); err != nil {
+		t.Fatal(err)
+	}
+	wl.Status.Payments.ScannedThroughBlock = ahead
+	if err := h.k8s.Status().Update(ctx, &wl); err != nil {
+		t.Fatal(err)
+	}
+	h.pay(t, 7_000_000)
+	h.mine(t, 3)
+
+	h.watcher.Pass(ctx)
+	p := h.payments(t)
+	if p.LastError != shophubv1alpha1.PaymentsReasonCursorAheadOfChain || p.ScannedThroughBlock != ahead {
+		t.Fatalf("status with the read position above the head = %+v", p)
+	}
+	if !strings.Contains(p.LastErrorMessage, "above the chain head") {
+		t.Fatalf("message = %q", p.LastErrorMessage)
+	}
+	if got := h.shop.transfers(); len(got) != 0 {
+		t.Fatalf("delivered while the read position is wrong: %+v", got)
+	}
+
+	if err := h.k8s.Get(ctx, h.wallet, &wl); err != nil {
+		t.Fatal(err)
+	}
+	wl.Status.Payments = nil
+	if err := h.k8s.Status().Update(ctx, &wl); err != nil {
+		t.Fatal(err)
+	}
+	h.watcher.Pass(ctx)
+	if p := h.payments(t); p.LastError != "" || p.ScannedThroughBlock != int64(h.head(t)-3) {
+		t.Fatalf("status after clearing = %+v", p)
 	}
 }
