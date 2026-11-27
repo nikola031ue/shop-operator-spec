@@ -345,14 +345,14 @@ func TestWatcherRefusesAProviderOnTheWrongChain(t *testing.T) {
 	h := newHarness(t, 10, true)
 	ctx := context.Background()
 	h.mine(t, 5)
-	h.watcher.Config.Payments.ChainID = 11155111 // Anvil serves 31337
+	h.watcher.Config.Payments.ChainID = 424242 // any id but Anvil's 31337
 
 	h.watcher.Pass(ctx)
 	p := h.payments(t)
 	if p.LastError != shophubv1alpha1.PaymentsReasonWrongChain || p.ScannedThroughBlock != 0 {
 		t.Fatalf("status on the wrong chain = %+v", p)
 	}
-	if !strings.Contains(p.LastErrorMessage, "31337") || !strings.Contains(p.LastErrorMessage, "11155111") {
+	if !strings.Contains(p.LastErrorMessage, "31337") || !strings.Contains(p.LastErrorMessage, "424242") {
 		t.Fatalf("the message should name both chain ids: %q", p.LastErrorMessage)
 	}
 	if strings.Contains(p.LastErrorMessage, h.a.endpoint) {
