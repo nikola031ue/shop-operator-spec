@@ -44,7 +44,18 @@ jobs:
         run: |
           make manifests generate
           git diff --exit-code -- api config || { echo "::error::run 'make manifests generate' and commit the result"; exit 1; }
-      - name: Unit + envtest integration tests
+      - name: CI and tests never use Sepolia or an RPC provider (spec 005 FR-019)
+        run: hack/check-no-chain-hosts.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: mUSDT build matches its source (spec 005 research R8)
+        working-directory: contracts
+        run: |
+          npm ci --no-audit --no-fund
+          ./build.sh
+          git diff --exit-code -- build || { echo "::error::contracts/build differs from MockUSDT.sol; run contracts/build.sh and commit"; exit 1; }
+      - name: Unit + envtest integration tests (chain tests on Anvil via Docker)
         run: make test
 
   release:

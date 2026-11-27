@@ -1,0 +1,9 @@
+{
+  "name": "shophub-musdt",
+  "private": true,
+  "description": "Pins the OpenZeppelin Contracts version MockUSDT.sol is compiled against (spec 005).",
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/contracts": "5.1.0"
+  }
+}
