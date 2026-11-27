@@ -38,6 +38,35 @@ const (
 	RedisPasswordLength = 32
 )
 
+// InternalSecretName is the Secret holding a Shop's internal API token (spec 005 data-model
+// "Derived Secret"): generated once, never regenerated while it exists.
+func InternalSecretName(shop *shophubv1alpha1.Shop) string { return shop.Name + "-internal" }
+
+// InternalTokenKey is the data key of the internal token; InternalTokenBytes its random size.
+const (
+	InternalTokenKey   = "token"
+	InternalTokenBytes = 32
+)
+
+// RandomToken returns n random bytes from crypto/rand, standard base64 (44 characters for 32).
+func RandomToken(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generating token: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf), nil
+}
+
+// TokenSecret builds an Opaque Secret with one token under InternalTokenKey; created once.
+func TokenSecret(shop *shophubv1alpha1.Shop, labels map[string]string, token string) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{Name: InternalSecretName(shop), Namespace: shop.Namespace, Labels: merge(labels)},
+		Type:       corev1.SecretTypeOpaque,
+		StringData: map[string]string{InternalTokenKey: token},
+	}
+}
+
 // AdminSecretName is the Secret holding a Shop's generated initial admin password (003 R1).
 func AdminSecretName(shop *shophubv1alpha1.Shop) string { return shop.Name + "-admin" }
 

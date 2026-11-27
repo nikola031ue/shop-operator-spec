@@ -40,8 +40,15 @@ func routedParams() ShopParams {
 	p.IngressNamespace, p.ShopHubNamespace = tTraefik, tShopHub
 	p.ShopHubPodLabels = map[string]string{"app.kubernetes.io/name": tShopHub, "app.kubernetes.io/instance": tShopHub}
 	p.TrustedProxyHost = "traefik-proxies.traefik.svc.cluster.local"
+	p.OperatorNamespace = tOperatorNS
+	p.OperatorPodLabels = map[string]string{"app.kubernetes.io/name": tOperator, "app.kubernetes.io/instance": tOperator}
 	return p
 }
+
+const (
+	tOperatorNS = "shop-operator-system"
+	tOperator   = "shop-operator"
+)
 
 func TestURLIsPublicHTTPS(t *testing.T) {
 	p := routedParams()
@@ -88,7 +95,7 @@ func TestNetworkPolicy(t *testing.T) {
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Fatalf("policyTypes = %v", np.Spec.PolicyTypes)
 	}
-	if len(np.Spec.Ingress) != 1 {
+	if len(np.Spec.Ingress) != 2 {
 		t.Fatalf("ingress rules = %+v", np.Spec.Ingress)
 	}
 	rule := np.Spec.Ingress[0]
@@ -124,5 +131,37 @@ func TestDeploymentTrustedProxyEnv(t *testing.T) {
 	}
 	if _, ok := env["TRUSTED_PROXY_CIDRS"]; ok {
 		t.Fatal("TRUSTED_PROXY_CIDRS must be gone: the pod network includes ShopHub, which could forge the address")
+	}
+}
+
+// Spec 005 research R4: the internal port is admitted only from the operator's own pods, and the
+// app port rule doesn't open it.
+func TestNetworkPolicyInternalPortOnlyFromTheOperator(t *testing.T) {
+	np := NetworkPolicy(routedParams())
+	rule := np.Spec.Ingress[1]
+	if len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != InternalPort || *rule.Ports[0].Protocol != corev1.ProtocolTCP {
+		t.Fatalf("internal rule ports = %+v", rule.Ports)
+	}
+	if len(rule.From) != 1 || rule.From[0].NamespaceSelector.MatchLabels[LabelNamespaceName] != tOperatorNS ||
+		rule.From[0].PodSelector == nil || rule.From[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != tOperator {
+		t.Fatalf("internal rule peers = %+v", rule.From)
+	}
+	for _, p := range np.Spec.Ingress[0].Ports {
+		if p.Port.IntValue() == InternalPort {
+			t.Fatal("the entry point and ShopHub must not reach the internal port")
+		}
+	}
+}
+
+// Spec 005: the Service exposes the internal port; the Ingress still routes only "http".
+func TestInternalPortOnServiceNotIngress(t *testing.T) {
+	p := routedParams()
+	svc := Service(p)
+	if len(svc.Spec.Ports) != 2 || svc.Spec.Ports[1].Name != "internal" || svc.Spec.Ports[1].Port != InternalPort {
+		t.Fatalf("service ports = %+v", svc.Spec.Ports)
+	}
+	backend := Ingress(p).Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port
+	if backend.Name != "http" && backend.Number != HTTPPort {
+		t.Fatalf("ingress backend = %+v", backend)
 	}
 }

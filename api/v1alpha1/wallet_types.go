@@ -70,7 +70,52 @@ type WalletStatus struct {
 	// +listType=set
 	// +optional
 	UsedBy []string `json:"usedBy,omitempty"`
+
+	// payments is the payment watcher's progress for this address (spec 005 research R3).
+	// +optional
+	Payments *WalletPayments `json:"payments,omitempty"`
 }
+
+// WalletPayments is written by the payment watcher only; the Wallet controller derives the
+// PaymentsWatching condition from it (spec 005 data-model.md "Wallet status").
+type WalletPayments struct {
+	// scannedThroughBlock is the last confirmed block whose transfers the owning shop accepted.
+	// +optional
+	ScannedThroughBlock int64 `json:"scannedThroughBlock,omitempty"`
+
+	// scannedThroughTime is that block's time.
+	// +optional
+	ScannedThroughTime *metav1.Time `json:"scannedThroughTime,omitempty"`
+
+	// lastError is the reason code of the watcher's last failure for this address
+	// (RPCCredentialsMissing, ProviderError or ShopUnreachable); empty after a success.
+	// +optional
+	LastError string `json:"lastError,omitempty"`
+
+	// lastErrorMessage explains lastError; it never contains the provider URL or a token.
+	// +optional
+	LastErrorMessage string `json:"lastErrorMessage,omitempty"`
+
+	// lastErrorTime is when lastError was last seen.
+	// +optional
+	LastErrorTime *metav1.Time `json:"lastErrorTime,omitempty"`
+}
+
+// Payment watcher condition and reasons (spec 005 contracts/operator.md).
+const (
+	// ConditionPaymentsWatching tells whether payments to this Wallet are being recognised.
+	ConditionPaymentsWatching = "PaymentsWatching"
+
+	PaymentsReasonWatching              = "Watching"
+	PaymentsReasonStarting              = "Starting"
+	PaymentsReasonTokenNotConfigured    = "TokenNotConfigured"
+	PaymentsReasonRPCCredentialsMissing = "RPCCredentialsMissing"
+	PaymentsReasonProviderError         = "ProviderError"
+	PaymentsReasonShopUnreachable       = "ShopUnreachable"
+	// PaymentsReasonStalled: the chain hasn't been read for this address for longer than the
+	// stall threshold, although nothing reported an error (e.g. the watcher loop stopped).
+	PaymentsReasonStalled = "Stalled"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

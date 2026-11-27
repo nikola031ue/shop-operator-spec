@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	"context"
 	"path/filepath"
 
@@ -40,6 +42,7 @@ var _ = Describe("Config.Validate (FR-007, spec 004)", func() {
 		DiscordTokenSecret: types.NamespacedName{Namespace: "shop-operator-system", Name: testTokenSecret},
 		WatchNamespace:     "shops", ShopDomain: "shops.localhost", IngressClass: testIngressNS,
 		IngressNamespace: testIngressNS, ShopHubNamespace: testShopHub, ShopHubPodSelector: testShopHubPods, TrustedProxyHost: testProxyHost,
+		OperatorPodSelector: testOperatorPods, Payments: DefaultPayments("shop-operator-system"),
 	}
 
 	It("accepts a pinned image", func() {
@@ -67,7 +70,28 @@ var _ = Describe("Config.Validate (FR-007, spec 004)", func() {
 		Entry("no shophub pod selector", func(c *Config) { c.ShopHubPodSelector = "" }, "--shophub-pod-selector"),
 		Entry("bad shophub pod selector", func(c *Config) { c.ShopHubPodSelector = "app in (a)" }, "--shophub-pod-selector"),
 		Entry("CIDR as proxy host", func(c *Config) { c.TrustedProxyHost = "10.244.0.0/16" }, "--trusted-proxy-host"),
+		Entry("no operator pod selector", func(c *Config) { c.OperatorPodSelector = "" }, "--operator-pod-selector"),
+		Entry("bad token address", func(c *Config) { c.Payments.TokenAddress = "0x123" }, "--payments-token-address"),
+		Entry("token checksum typo", func(c *Config) {
+			c.Payments.TokenAddress = "0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80e2"
+		}, "--payments-token-address"),
+		Entry("no confirmations", func(c *Config) { c.Payments.Confirmations = 0 }, "--payments-confirmations"),
+		Entry("poll too fast", func(c *Config) { c.Payments.PollInterval = 100 * time.Millisecond }, "--payments-poll-interval"),
+		Entry("no log range", func(c *Config) { c.Payments.LogsBlockRange = 0 }, "--payments-logs-block-range"),
+		Entry("no payment window", func(c *Config) { c.Payments.OrderPaymentMinutes = 0 }, "--payments-order-minutes"),
+		Entry("http explorer", func(c *Config) { c.Payments.ExplorerTxURL = "http://x/tx/" }, "--payments-explorer-tx-url"),
+		Entry("no RPC secret", func(c *Config) { c.Payments.RPCSecret.Name = "" }, "--payments-rpc-secret"),
+		Entry("stall too short", func(c *Config) { c.Payments.StallAfter = time.Second }, "--payments-stall-after"),
 	)
+
+	It("spec 005: accepts a token address in any valid form and stores it checksummed", func() {
+		c := valid
+		c.Payments.TokenAddress = "0xdf8d5deb736ebc79f7e99c4c90975d4b8f8d80e2"
+		Expect(c.Validate()).To(Succeed())
+		Expect(c.Payments.TokenAddress).To(Equal("0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2"))
+		Expect(c.Payments.Enabled()).To(BeTrue())
+		Expect(valid.Payments.Enabled()).To(BeFalse())
+	})
 
 	It("accepts an empty trusted proxy host (the app then trusts no proxy)", func() {
 		c := valid

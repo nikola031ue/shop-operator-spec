@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
+	"github.com/nikola031ue/shop-operator/internal/wallet"
 )
 
 // Config is the platform configuration passed from flags (data-model.md "Platform configuration").
@@ -68,6 +71,60 @@ type Config struct {
 	// traefik-proxies Service) whose addresses are the only peers whose forwarded headers count.
 	// Empty means no proxy is trusted.
 	TrustedProxyHost string
+
+	// OperatorPodSelector (k=v,...) selects the operator's own pods in OperatorNamespace(): the
+	// only peers the Shop NetworkPolicy admits on the internal port (spec 005 research R4).
+	OperatorPodSelector string
+
+	// Payments configures the chain watcher and the shop app's payment settings (spec 005).
+	Payments PaymentsConfig
+}
+
+// PaymentsConfig is spec 005's platform payment configuration (data-model.md "Platform settings
+// and Secrets"). An empty TokenAddress turns the watcher off; Wallets report TokenNotConfigured.
+type PaymentsConfig struct {
+	// TokenAddress is the mUSDT contract (EIP-55 after Validate); public, from kube-state.
+	TokenAddress string
+	// ChainID is the chain the token lives on (Sepolia 11155111).
+	ChainID int64
+	// Confirmations is how many blocks must follow a transfer's block before it counts.
+	Confirmations uint64
+	// PollInterval is how often the watcher reads the chain head.
+	PollInterval time.Duration
+	// LogsBlockRange is the most blocks one log query covers (free provider plans limit it).
+	LogsBlockRange uint64
+	// OrderPaymentMinutes is the shop's payment window (FR-009).
+	OrderPaymentMinutes int
+	// ExplorerTxURL + a transaction hash is its explorer page.
+	ExplorerTxURL string
+	// RPCSecret locates the hand-made Secret whose key "url" is the provider endpoint. It is
+	// unlabelled, so it is read by name with the uncached API reader, never listed.
+	RPCSecret types.NamespacedName
+	// StallAfter: a Wallet whose chain reading is further behind than this reports Stalled.
+	StallAfter time.Duration
+}
+
+// DefaultPayments is the payment configuration without a token (watcher off) and the spec 005
+// defaults: Sepolia, 6 confirmations, a 12 s poll, 10-block log queries, a 30-minute window.
+func DefaultPayments(operatorNamespace string) PaymentsConfig {
+	return PaymentsConfig{
+		ChainID: 11155111, Confirmations: 6, PollInterval: 12 * time.Second, LogsBlockRange: 10,
+		OrderPaymentMinutes: 30, ExplorerTxURL: "https://sepolia.etherscan.io/tx/",
+		RPCSecret:  types.NamespacedName{Namespace: operatorNamespace, Name: "shop-operator-rpc"},
+		StallAfter: 5 * time.Minute,
+	}
+}
+
+// Enabled reports whether payments are configured (a token address is set).
+func (p PaymentsConfig) Enabled() bool { return p.TokenAddress != "" }
+
+// OperatorPodLabels returns the parsed --operator-pod-selector (validated at startup).
+func (c Config) OperatorPodLabels() map[string]string {
+	sel, err := labels.ConvertSelectorToLabelsMap(c.OperatorPodSelector)
+	if err != nil {
+		return nil
+	}
+	return sel
 }
 
 // OperatorNamespace is the operator's own namespace (where the Discord token Secret lives).
@@ -89,7 +146,7 @@ func (c Config) ShopsNamespace(ns string) bool {
 
 // Validate rejects configurations that would break FR-007 (pinned image, never "latest") or
 // the spec 004 routing and namespace scoping.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	var errs []error
 	for flag, ns := range map[string]string{
 		"--watch-namespace": c.WatchNamespace, "--ingress-namespace": c.IngressNamespace,
@@ -122,7 +179,47 @@ func (c Config) Validate() error {
 	if c.DiscordTokenSecret.Name == "" || c.DiscordTokenSecret.Namespace == "" {
 		errs = append(errs, errors.New("--discord-token-secret and the operator namespace must be set"))
 	}
+	if sel, err := labels.ConvertSelectorToLabelsMap(c.OperatorPodSelector); err != nil || len(sel) == 0 {
+		errs = append(errs, fmt.Errorf("--operator-pod-selector must be k=v[,k=v], got %q", c.OperatorPodSelector))
+	}
+	errs = append(errs, c.Payments.validate()...)
 	return errors.Join(errs...)
+}
+
+func (p *PaymentsConfig) validate() []error {
+	var errs []error
+	if p.TokenAddress != "" {
+		addr, err := wallet.NormalizeAddress(p.TokenAddress)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("--payments-token-address must be an Ethereum address, got %q", p.TokenAddress))
+		}
+		p.TokenAddress = addr
+	}
+	if p.ChainID < 1 {
+		errs = append(errs, fmt.Errorf("--payments-chain-id must be positive, got %d", p.ChainID))
+	}
+	if p.Confirmations < 1 || p.Confirmations > 128 {
+		errs = append(errs, fmt.Errorf("--payments-confirmations must be 1-128, got %d", p.Confirmations))
+	}
+	if p.PollInterval < time.Second || p.PollInterval > time.Minute {
+		errs = append(errs, fmt.Errorf("--payments-poll-interval must be 1s-1m, got %s", p.PollInterval))
+	}
+	if p.LogsBlockRange < 1 || p.LogsBlockRange > 10000 {
+		errs = append(errs, fmt.Errorf("--payments-logs-block-range must be 1-10000, got %d", p.LogsBlockRange))
+	}
+	if p.OrderPaymentMinutes < 1 || p.OrderPaymentMinutes > 24*60 {
+		errs = append(errs, fmt.Errorf("--payments-order-minutes must be 1-1440, got %d", p.OrderPaymentMinutes))
+	}
+	if u, err := url.Parse(p.ExplorerTxURL); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, fmt.Errorf("--payments-explorer-tx-url must be an https URL, got %q", p.ExplorerTxURL))
+	}
+	if p.RPCSecret.Name == "" || p.RPCSecret.Namespace == "" {
+		errs = append(errs, errors.New("--payments-rpc-secret and the operator namespace must be set"))
+	}
+	if p.StallAfter < time.Minute {
+		errs = append(errs, fmt.Errorf("--payments-stall-after must be at least 1m, got %s", p.StallAfter))
+	}
+	return errs
 }
 
 // CacheOptions restricts the Secret cache to Secrets the operator created (research R14) and,

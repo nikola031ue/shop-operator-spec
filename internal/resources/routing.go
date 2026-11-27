@@ -70,7 +70,8 @@ func Ingress(p ShopParams) *networkingv1.Ingress {
 }
 
 // NetworkPolicy admits traffic to the shop pods, on the app port, only from the entry point's
-// namespace and from the ShopHub app pods (for the FR-016 hand-off status read). Forwarded
+// namespace and from the ShopHub app pods (for the FR-016 hand-off status read), and on the
+// internal port only from the operator's pods (spec 005). Forwarded
 // headers are trusted from Traefik alone, so ShopHub is an untrusted peer (spec 004 research R5).
 func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 	shop := p.Shop
@@ -84,6 +85,9 @@ func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 	// Namespace and pod selector in one peer: both must match.
 	shophub := from(p.ShopHubNamespace)
 	shophub.PodSelector = &metav1.LabelSelector{MatchLabels: p.ShopHubPodLabels}
+	operator := from(p.OperatorNamespace)
+	operator.PodSelector = &metav1.LabelSelector{MatchLabels: p.OperatorPodLabels}
+	internal := intstr.FromInt32(InternalPort)
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -93,10 +97,17 @@ func NetworkPolicy(p ShopParams) *networkingv1.NetworkPolicy {
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: selectorLabels(shop)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From:  []networkingv1.NetworkPolicyPeer{from(p.IngressNamespace), shophub},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
-			}},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From:  []networkingv1.NetworkPolicyPeer{from(p.IngressNamespace), shophub},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+				},
+				// Spec 005 research R4: the internal API port only from the operator's own pods.
+				{
+					From:  []networkingv1.NetworkPolicyPeer{operator},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &internal}},
+				},
+			},
 		},
 	}
 }
