@@ -148,6 +148,33 @@ spec:
                 description: observedGeneration is the metadata.generation last reconciled.
                 format: int64
                 type: integer
+              payments:
+                description: payments is the payment watcher's progress for this address
+                  (spec 005 research R3).
+                properties:
+                  lastError:
+                    description: |-
+                      lastError is the reason code of the watcher's last failure for this address
+                      (RPCCredentialsMissing, ProviderError or ShopUnreachable); empty after a success.
+                    type: string
+                  lastErrorMessage:
+                    description: lastErrorMessage explains lastError; it never contains
+                      the provider URL or a token.
+                    type: string
+                  lastErrorTime:
+                    description: lastErrorTime is when lastError was last seen.
+                    format: date-time
+                    type: string
+                  scannedThroughBlock:
+                    description: scannedThroughBlock is the last confirmed block whose
+                      transfers the owning shop accepted.
+                    format: int64
+                    type: integer
+                  scannedThroughTime:
+                    description: scannedThroughTime is that block's time.
+                    format: date-time
+                    type: string
+                type: object
               usedBy:
                 description: usedBy lists the Shops in this namespace that reference
                   this Wallet.

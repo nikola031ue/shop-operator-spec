@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -39,6 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
+	"github.com/nikola031ue/shop-operator/internal/shopapi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -105,6 +107,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupIndexes(ctx, mgr)).To(Succeed())
 	Expect((&WalletReconciler{
 		Config: testConfig, Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
+		Shops: testShops, Recheck: time.Second,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ShopReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Config: testConfig,
@@ -124,16 +127,58 @@ var testConfig = Config{
 	// tested with a second API server (scope_test.go).
 	ShopDomain: testShopDomain, IngressClass: testIngressNS, IngressNamespace: testIngressNS,
 	ShopHubNamespace: testShopHub, ShopHubPodSelector: testShopHubPods, TrustedProxyHost: testProxyHost,
+	OperatorPodSelector: testOperatorPods, Payments: testPayments(),
 }
+
+// testPayments turns payments on in the suite (spec 005), so Wallets get PaymentsWatching and
+// the D-1 deletion hold is exercised against testShops.
+func testPayments() PaymentsConfig {
+	p := DefaultPayments("default")
+	p.TokenAddress = testTokenAddress
+	return p
+}
+
+const testTokenAddress = "0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2"
+
+// fakeShops stands in for the shops' internal API: waiting-order counts per shop name.
+type fakeShops struct {
+	mu      sync.Mutex
+	waiting map[string]int64
+	tokens  map[string]string
+}
+
+func (f *fakeShops) Deliver(context.Context, shopapi.Shop, shopapi.Delivery) error { return nil }
+
+func (f *fakeShops) Waiting(_ context.Context, shop shopapi.Shop, _ string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokens[shop.Name] = shop.Token
+	return f.waiting[shop.Name], nil
+}
+
+func (f *fakeShops) set(shop string, n int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waiting[shop] = n
+}
+
+func (f *fakeShops) tokenSeen(shop string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokens[shop]
+}
+
+var testShops = &fakeShops{waiting: map[string]int64{}, tokens: map[string]string{}}
 
 // Values shared by the suite's and the scoped manager's configuration.
 const (
-	testProxyHost   = "traefik-proxies.traefik.svc.cluster.local"
-	testShopHub     = "shophub"
-	testShopHubPods = "app.kubernetes.io/name=shophub,app.kubernetes.io/instance=shophub"
-	testShopDomain  = "shops.localhost"
-	testIngressNS   = "traefik"
-	testTokenSecret = "shop-operator-discord"
+	testProxyHost    = "traefik-proxies.traefik.svc.cluster.local"
+	testShopHub      = "shophub"
+	testShopHubPods  = "app.kubernetes.io/name=shophub,app.kubernetes.io/instance=shophub"
+	testShopDomain   = "shops.localhost"
+	testIngressNS    = "traefik"
+	testTokenSecret  = "shop-operator-discord"
+	testOperatorPods = "app.kubernetes.io/name=shop-operator,app.kubernetes.io/instance=shop-operator"
 )
 
 // logBuf captures every operator log line so tests can assert no secret value is logged (SC-007).

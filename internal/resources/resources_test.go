@@ -351,3 +351,54 @@ const (
 	tRedisAuth  = "acme-redis-auth"
 	tRedisAuth2 = "acme-redis-auth-2"
 )
+
+// Spec 005 contracts/operator.md "Shop app wiring": payment settings, the internal port and the
+// internal token by reference, never by value.
+func TestDeploymentPaymentsWiring(t *testing.T) {
+	p := params(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard))
+	p.ChainID, p.ExplorerTxURL, p.OrderPaymentMinutes, p.InternalSecretUID = 31337, "https://explorer.test/tx/", 30, "uid-1"
+	d := Deployment(p)
+	c := d.Spec.Template.Spec.Containers[0]
+	env := envMap(c)
+	for name, want := range map[string]string{
+		"CHAIN_ID": "31337", "EXPLORER_TX_URL": "https://explorer.test/tx/", "ORDER_PAYMENT_MINUTES": "30",
+		"INTERNAL_PORT": "8081",
+	} {
+		if env[name].Value != want {
+			t.Errorf("%s = %q, want %q", name, env[name].Value, want)
+		}
+	}
+	if _, set := env["TOKEN_ADDRESS"]; set {
+		t.Error("TOKEN_ADDRESS must be absent while payments are off")
+	}
+	ref := env["INTERNAL_TOKEN"].ValueFrom
+	if env["INTERNAL_TOKEN"].Value != "" || ref == nil || ref.SecretKeyRef.Name != tShop+"-internal" || ref.SecretKeyRef.Key != "token" {
+		t.Fatalf("INTERNAL_TOKEN must come from Secret %s-internal key token: %+v", tShop, env["INTERNAL_TOKEN"])
+	}
+	if len(c.Ports) != 2 || c.Ports[1].Name != "internal" || c.Ports[1].ContainerPort != InternalPort {
+		t.Fatalf("container ports = %+v", c.Ports)
+	}
+	if d.Spec.Template.Annotations[AnnotationInternalSecretUID] != "uid-1" {
+		t.Fatalf("annotations = %v", d.Spec.Template.Annotations)
+	}
+
+	p.TokenAddress = "0xdF8d5dEb736EBC79f7e99C4c90975d4b8f8d80E2"
+	if got := envMap(Deployment(p).Spec.Template.Spec.Containers[0])["TOKEN_ADDRESS"].Value; got != p.TokenAddress {
+		t.Fatalf("TOKEN_ADDRESS = %q", got)
+	}
+}
+
+func TestTokenSecretAndRandomToken(t *testing.T) {
+	a, err := RandomToken(InternalTokenBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := RandomToken(InternalTokenBytes)
+	if len(a) != 44 || a == b {
+		t.Fatalf("tokens %q %q", a, b)
+	}
+	s := TokenSecret(shop(shophubv1alpha1.AvailabilityStandard, shophubv1alpha1.DatabaseStandard), owner, a)
+	if s.Name != tShop+"-internal" || s.StringData["token"] != a || s.Type != corev1.SecretTypeOpaque {
+		t.Fatalf("secret = %+v", s)
+	}
+}

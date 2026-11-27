@@ -37,7 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	shophubv1alpha1 "github.com/nikola031ue/shop-operator/api/v1alpha1"
+	"github.com/nikola031ue/shop-operator/internal/chain"
 	"github.com/nikola031ue/shop-operator/internal/controller"
+	"github.com/nikola031ue/shop-operator/internal/shopapi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -107,6 +109,28 @@ func main() {
 		"Labels (k=v,...) of the ShopHub app pods; only they are admitted from --shophub-namespace.")
 	flag.StringVar(&cfg.TrustedProxyHost, "trusted-proxy-host", "traefik-proxies.traefik.svc.cluster.local",
 		"DNS name whose addresses are the only proxies the shop app trusts (TRUSTED_PROXY_HOST).")
+	// Spec 005 (operator 0.4.0): payments and the chain watcher.
+	flag.StringVar(&cfg.OperatorPodSelector, "operator-pod-selector",
+		"app.kubernetes.io/name=shop-operator,app.kubernetes.io/instance=shop-operator",
+		"Labels (k=v,...) of the operator's pods; only they are admitted on a shop's internal port.")
+	payments := controller.DefaultPayments("")
+	flag.StringVar(&payments.TokenAddress, "payments-token-address", "",
+		"mUSDT token contract address; empty turns payments and the watcher off.")
+	flag.Int64Var(&payments.ChainID, "payments-chain-id", payments.ChainID, "Chain id of the token (Sepolia 11155111).")
+	flag.Uint64Var(&payments.Confirmations, "payments-confirmations", payments.Confirmations,
+		"Blocks that must follow a transfer's block before it counts.")
+	flag.DurationVar(&payments.PollInterval, "payments-poll-interval", payments.PollInterval,
+		"How often the watcher reads the chain head.")
+	flag.Uint64Var(&payments.LogsBlockRange, "payments-logs-block-range", payments.LogsBlockRange,
+		"Most blocks one log query covers (free provider plans limit it).")
+	flag.IntVar(&payments.OrderPaymentMinutes, "payments-order-minutes", payments.OrderPaymentMinutes,
+		"Shop payment window in minutes (ORDER_PAYMENT_MINUTES).")
+	flag.StringVar(&payments.ExplorerTxURL, "payments-explorer-tx-url", payments.ExplorerTxURL,
+		"Explorer URL prefix for a transaction hash (EXPLORER_TX_URL).")
+	flag.StringVar(&payments.RPCSecret.Name, "payments-rpc-secret", "shop-operator-rpc",
+		"Hand-made Secret in the operator namespace whose key 'url' is the provider endpoint (it holds an API key).")
+	flag.DurationVar(&payments.StallAfter, "payments-stall-after", payments.StallAfter,
+		"A Wallet whose chain reading is further behind than this reports PaymentsWatching=False/Stalled.")
 	opts := zap.Options{
 		Development: false,
 	}
@@ -116,6 +140,8 @@ func main() {
 	if cfg.DiscordTokenSecret.Namespace == "" {
 		cfg.DiscordTokenSecret.Namespace = "shop-operator-system"
 	}
+	payments.RPCSecret.Namespace = cfg.DiscordTokenSecret.Namespace
+	cfg.Payments = payments
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -246,11 +272,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "shop")
 		os.Exit(1)
 	}
+	shops := shopapi.NewHTTPClient()
 	if err := (&controller.WalletReconciler{
 		Config:    cfg,
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		APIReader: mgr.GetAPIReader(),
+		Shops:     shops,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "wallet")
 		os.Exit(1)
@@ -265,6 +293,15 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	// Spec 005: the single chain watcher (leader-elected, so one active replica).
+	if err := mgr.Add(&chain.Watcher{
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Config: cfg, Shops: shops,
+		Dial: chain.DialEthclient, Log: ctrl.Log.WithName("payment-watcher"),
+	}); err != nil {
+		setupLog.Error(err, "Failed to add the payment watcher")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")

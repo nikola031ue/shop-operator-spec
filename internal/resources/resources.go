@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,9 @@ const (
 	RedisImage = "quay.io/opstree/redis:v7.2.16"
 	// HTTPPort is the port the shop application listens on.
 	HTTPPort = 80
+	// InternalPort is the shop app's internal API port for the operator (spec 005 research R4);
+	// the Ingress never routes to it.
+	InternalPort = 8081
 	// LabelName / LabelInstance select a shop's pods.
 	LabelName     = "app.kubernetes.io/name"
 	LabelInstance = "app.kubernetes.io/instance"
@@ -91,6 +95,17 @@ type ShopParams struct {
 	// ShopHubPodLabels select the ShopHub app pods inside ShopHubNamespace.
 	ShopHubPodLabels map[string]string
 	TrustedProxyHost string
+
+	// Payments (spec 005): the shop app's settings and the internal API wiring. InternalSecretUID
+	// rolls the pods when <shop>-internal is recreated; OperatorNamespace and OperatorPodLabels
+	// are the only peers admitted on InternalPort.
+	TokenAddress        string
+	ChainID             int64
+	ExplorerTxURL       string
+	OrderPaymentMinutes int
+	InternalSecretUID   string
+	OperatorNamespace   string
+	OperatorPodLabels   map[string]string
 }
 
 // redisSecretName returns the Redis password Secret to reference.
@@ -103,8 +118,9 @@ func (p ShopParams) redisSecretName() string {
 
 // Pod-template annotations carrying Secret UIDs (003 contract).
 const (
-	AnnotationAdminSecretUID = "shophub.io/admin-secret-uid"
-	AnnotationRedisSecretUID = "shophub.io/redis-secret-uid"
+	AnnotationAdminSecretUID    = "shophub.io/admin-secret-uid"
+	AnnotationRedisSecretUID    = "shophub.io/redis-secret-uid"
+	AnnotationInternalSecretUID = "shophub.io/internal-secret-uid"
 )
 
 // Shop container resources (003 research R16): the app must not depend on fitting 128Mi.
@@ -153,8 +169,22 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 		// are not trusted, so they can't forge the client address.
 		{Name: "TRUSTED_PROXY_HOST", Value: p.TrustedProxyHost},
 		secretEnv("ADMIN_PASSWORD", AdminSecretName(shop)),
+		// Spec 005: payments and the operator's internal API (contracts/operator.md "Shop app wiring").
+		{Name: "CHAIN_ID", Value: strconv.FormatInt(p.ChainID, 10)},
+		{Name: "EXPLORER_TX_URL", Value: p.ExplorerTxURL},
+		{Name: "ORDER_PAYMENT_MINUTES", Value: strconv.Itoa(p.OrderPaymentMinutes)},
+		{Name: "INTERNAL_PORT", Value: strconv.Itoa(InternalPort)},
+		{Name: "INTERNAL_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: InternalSecretName(shop)}, Key: InternalTokenKey,
+		}}},
 	}
-	annotations := map[string]string{AnnotationAdminSecretUID: p.AdminSecretUID}
+	if p.TokenAddress != "" {
+		env = append(env, corev1.EnvVar{Name: "TOKEN_ADDRESS", Value: p.TokenAddress})
+	}
+	annotations := map[string]string{
+		AnnotationAdminSecretUID:    p.AdminSecretUID,
+		AnnotationInternalSecretUID: p.InternalSecretUID,
+	}
 	switch shop.Spec.Database {
 	case shophubv1alpha1.DatabaseLight:
 		env = append(env, corev1.EnvVar{
@@ -193,8 +223,11 @@ func Deployment(p ShopParams) *appsv1.Deployment {
 					Containers: []corev1.Container{{
 						Name:  "shop",
 						Image: p.Image,
-						Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: HTTPPort, Protocol: corev1.ProtocolTCP}},
-						Env:   env,
+						Ports: []corev1.ContainerPort{
+							{Name: "http", ContainerPort: HTTPPort, Protocol: corev1.ProtocolTCP},
+							{Name: "internal", ContainerPort: InternalPort, Protocol: corev1.ProtocolTCP},
+						},
+						Env: env,
 						ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 							TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("http")},
 						}},
@@ -224,9 +257,11 @@ func Service(p ShopParams) *corev1.Service {
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: selectorLabels(shop),
-			Ports: []corev1.ServicePort{{
-				Name: "http", Port: HTTPPort, TargetPort: intstr.FromString("http"), Protocol: corev1.ProtocolTCP,
-			}},
+			Ports: []corev1.ServicePort{
+				{Name: "http", Port: HTTPPort, TargetPort: intstr.FromString("http"), Protocol: corev1.ProtocolTCP},
+				// Spec 005: the operator's internal API; the Ingress routes only "http".
+				{Name: "internal", Port: InternalPort, TargetPort: intstr.FromString("internal"), Protocol: corev1.ProtocolTCP},
+			},
 		},
 	}
 }

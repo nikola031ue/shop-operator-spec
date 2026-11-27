@@ -165,6 +165,17 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Spec 005: the internal API token the watcher presents to this shop.
+	internalSec, err := r.ensureSecret(ctx, shop, resources.InternalSecretName(shop), func() (*corev1.Secret, error) {
+		token, err := resources.RandomToken(resources.InternalTokenBytes)
+		if err != nil {
+			return nil, err
+		}
+		return resources.TokenSecret(shop, labels, token), nil
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	var redisSec *corev1.Secret
 	if shop.Spec.Database == shophubv1alpha1.DatabaseLight {
 		res, sec, done, err := r.prepareRedis(ctx, shop, labels)
@@ -191,6 +202,10 @@ func (r *ShopReconciler) reconcile(ctx context.Context, shop *shophubv1alpha1.Sh
 		IngressNamespace: r.Config.IngressNamespace, ShopHubNamespace: r.Config.ShopHubNamespace,
 		ShopHubPodLabels: r.Config.ShopHubPodLabels(),
 		TrustedProxyHost: r.Config.TrustedProxyHost,
+		TokenAddress:     r.Config.Payments.TokenAddress, ChainID: r.Config.Payments.ChainID,
+		ExplorerTxURL: r.Config.Payments.ExplorerTxURL, OrderPaymentMinutes: r.Config.Payments.OrderPaymentMinutes,
+		InternalSecretUID: string(internalSec.UID),
+		OperatorNamespace: r.Config.OperatorNamespace(), OperatorPodLabels: r.Config.OperatorPodLabels(),
 	}
 	if redisSec != nil {
 		p.RedisSecretUID, p.RedisSecretName = string(redisSec.UID), redisSec.Name
@@ -256,6 +271,19 @@ func (r *ShopReconciler) getSecret(ctx context.Context, ns, name string) (*corev
 // value if it does not exist. An existing Secret is never updated (003 contract).
 func (r *ShopReconciler) ensurePasswordSecret(ctx context.Context, shop *shophubv1alpha1.Shop,
 	name string, length int, labels map[string]string) (*corev1.Secret, error) {
+	return r.ensureSecret(ctx, shop, name, func() (*corev1.Secret, error) {
+		pw, err := resources.RandomPassword(length)
+		if err != nil {
+			return nil, err
+		}
+		return resources.PasswordSecret(shop, name, labels, pw), nil
+	})
+}
+
+// ensureSecret returns the Shop's Secret name, creating it once from build (owned by the Shop).
+// An existing Secret is never updated or regenerated (003 contract, spec 005 "Derived Secret").
+func (r *ShopReconciler) ensureSecret(ctx context.Context, shop *shophubv1alpha1.Shop,
+	name string, build func() (*corev1.Secret, error)) (*corev1.Secret, error) {
 	sec, err := r.getSecret(ctx, shop.Namespace, name)
 	if err == nil {
 		return sec, nil
@@ -263,11 +291,10 @@ func (r *ShopReconciler) ensurePasswordSecret(ctx context.Context, shop *shophub
 	if !apierrors.IsNotFound(err) {
 		return nil, err
 	}
-	pw, err := resources.RandomPassword(length)
+	sec, err = build()
 	if err != nil {
 		return nil, err
 	}
-	sec = resources.PasswordSecret(shop, name, labels, pw)
 	if err := controllerutil.SetControllerReference(shop, sec, r.Scheme); err != nil {
 		return nil, err
 	}
@@ -277,7 +304,7 @@ func (r *ShopReconciler) ensurePasswordSecret(ctx context.Context, shop *shophub
 		}
 		return nil, fmt.Errorf("creating Secret %s: %w", name, err)
 	}
-	logf.FromContext(ctx).Info("Created generated password Secret", "secret", name) // name only (SC-007)
+	logf.FromContext(ctx).Info("Created generated Secret", "secret", name) // name only (SC-007)
 	return sec, nil
 }
 
@@ -439,8 +466,8 @@ func (r *ShopReconciler) availableReplicas(ctx context.Context, shop *shophubv1a
 	if err != nil {
 		return 0, err
 	}
-	if d.Status.ObservedGeneration < d.Generation || d.Status.UpdatedReplicas < desired {
-		return min(d.Status.AvailableReplicas, desired-1), nil // rollout still in progress
+	if RolloutInProgress(&d, desired) {
+		return min(d.Status.AvailableReplicas, desired-1), nil
 	}
 	return d.Status.AvailableReplicas, nil
 }
@@ -499,4 +526,13 @@ func (r *ShopReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		b = b.Owns(u)
 	}
 	return b.Named("shop").Complete(r)
+}
+
+// RolloutInProgress reports whether a Deployment still runs copies with earlier settings
+// (spec 005 D-5, research R10): not yet observed, not all copies updated, or old copies still
+// present or terminating. AvailableReplicas counts old copies too, so it alone can't tell.
+func RolloutInProgress(d *appsv1.Deployment, desired int32) bool {
+	terminating := d.Status.TerminatingReplicas != nil && *d.Status.TerminatingReplicas > 0
+	return d.Status.ObservedGeneration < d.Generation || d.Status.UpdatedReplicas < desired ||
+		d.Status.Replicas > d.Status.UpdatedReplicas || terminating
 }

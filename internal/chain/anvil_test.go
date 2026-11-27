@@ -33,10 +33,11 @@ const (
 
 // anvil is a running local chain with a client and the two default accounts.
 type anvil struct {
-	client  *ethclient.Client
-	chainID *big.Int
-	keys    [2]*ecdsa.PrivateKey
-	addrs   [2]common.Address
+	client   *ethclient.Client
+	endpoint string
+	chainID  *big.Int
+	keys     [2]*ecdsa.PrivateKey
+	addrs    [2]common.Address
 }
 
 // startAnvil runs Anvil in a container for the test (automining: every transaction is mined at
@@ -69,7 +70,7 @@ func startAnvil(t *testing.T) *anvil {
 	}
 	t.Cleanup(client.Close)
 
-	a := &anvil{client: client, chainID: big.NewInt(31337)}
+	a := &anvil{client: client, endpoint: endpoint, chainID: big.NewInt(31337)}
 	for i, hexKey := range []string{anvilKey0, anvilKey1} {
 		key, err := crypto.HexToECDSA(hexKey)
 		if err != nil {

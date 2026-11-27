@@ -182,7 +182,7 @@ var _ = Describe("Shop reconciler: operator 0.2.0 (spec 003)", func() {
 		Expect(k8sClient.Create(ctx, newShop(ns, "roll", "w", shophubv1alpha1.DatabaseLight))).To(Succeed())
 		Eventually(func(g Gomega) { getRedis(g, ns, "roll-redis") }, reasonTimeout).Should(Succeed())
 		makeRedisReady(ns, "roll-redis")
-		markDeploymentAvailable(ns, "roll", 2)
+		markDeploymentAvailable(ns, "roll")
 		Eventually(func(g Gomega) {
 			g.Expect(readyOf(getShop(g, ns, "roll").Status.Conditions)).To(Equal("True/" + ReasonReady))
 		}, reasonTimeout).Should(Succeed())

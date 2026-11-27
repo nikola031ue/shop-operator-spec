@@ -74,8 +74,10 @@ func envOf(d *appsv1.Deployment) map[string]corev1.EnvVar {
 	return m
 }
 
-func markDeploymentAvailable(ns, name string, n int32) {
+// markDeploymentAvailable reports a standard Shop's 2 copies as updated, ready and available.
+func markDeploymentAvailable(ns, name string) {
 	GinkgoHelper()
+	const n = 2
 	Eventually(func(g Gomega) {
 		d := getDeployment(g, ns, name)
 		d.Status.Replicas, d.Status.ReadyReplicas, d.Status.AvailableReplicas, d.Status.UpdatedReplicas = n, n, n, n
@@ -183,7 +185,7 @@ var _ = Describe("Shop reconciler (US1)", func() {
 		}, reasonTimeout).Should(Succeed())
 
 		By("becoming Ready when all copies are available")
-		markDeploymentAvailable(ns, testShopName, 2)
+		markDeploymentAvailable(ns, testShopName)
 		Eventually(func(g Gomega) {
 			s := getShop(g, ns, testShopName)
 			g.Expect(readyOf(s.Status.Conditions)).To(Equal("True/Ready"))
@@ -193,6 +195,20 @@ var _ = Describe("Shop reconciler (US1)", func() {
 			g.Expect(s.Status.WalletAddress).To(Equal(addrA))
 			g.Expect(s.Status.WebhookSecretName).To(Equal("ch-discord-webhook"))
 			g.Expect(s.Status.ObservedGeneration).To(Equal(s.Generation))
+		}, reasonTimeout).Should(Succeed())
+
+		By("spec 005 D-5: not Ready while a copy with earlier settings still runs")
+		Eventually(func(g Gomega) {
+			d := getDeployment(g, ns, testShopName)
+			d.Status.Replicas, d.Status.ReadyReplicas, d.Status.AvailableReplicas, d.Status.UpdatedReplicas = 3, 3, 3, 2
+			g.Expect(k8sClient.Status().Update(ctx, d)).To(Succeed())
+		}, reasonTimeout).Should(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(readyOf(getShop(g, ns, testShopName).Status.Conditions)).To(Equal("False/" + ReasonProgressing))
+		}, reasonTimeout).Should(Succeed())
+		markDeploymentAvailable(ns, testShopName)
+		Eventually(func(g Gomega) {
+			g.Expect(readyOf(getShop(g, ns, testShopName).Status.Conditions)).To(Equal("True/Ready"))
 		}, reasonTimeout).Should(Succeed())
 	})
 
@@ -219,7 +235,10 @@ var _ = Describe("Shop reconciler (US1)", func() {
 		Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name).To(Equal(testShopName))
 		Expect(ing.Spec.TLS).To(BeEmpty())
 		Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", testShopName))
-		Expect(np.Spec.Ingress).To(HaveLen(1))
+		Expect(np.Spec.Ingress).To(HaveLen(2)) // spec 005: the internal port rule
+		Expect(np.Spec.Ingress[1].From).To(HaveLen(1))
+		Expect(np.Spec.Ingress[1].From[0].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", testConfig.OperatorNamespace()))
+		Expect(np.Spec.Ingress[1].Ports[0].Port.IntValue()).To(Equal(8081))
 		Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 		Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", "traefik"))
 		Expect(np.Spec.Ingress[0].From[1].NamespaceSelector.MatchLabels).To(HaveKeyWithValue("kubernetes.io/metadata.name", testShopHub))
@@ -262,7 +281,7 @@ var _ = Describe("Shop reconciler (US1)", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "lite-db"}, cluster))).To(BeTrue())
 
 		makeRedisReady(ns, "lite-redis")
-		markDeploymentAvailable(ns, "lite", 2)
+		markDeploymentAvailable(ns, "lite")
 		Eventually(func(g Gomega) {
 			g.Expect(readyOf(getShop(g, ns, "lite").Status.Conditions)).To(Equal("True/Ready"))
 		}, reasonTimeout).Should(Succeed())
